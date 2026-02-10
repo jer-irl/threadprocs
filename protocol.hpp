@@ -17,9 +17,9 @@ struct client_request {
 	client_request_type type;
 	std::uint64_t total_len;
 	union {
-		char cwd[];
-		char env[];
-		char args[];
+		char cwd[0];
+		char env[0];
+		char args[0];
 	} payload[];
 };
 

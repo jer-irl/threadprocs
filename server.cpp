@@ -26,6 +26,7 @@ enum class ring_request_type {
 template<typename T>
 struct intrusive_list_node {
 
+	intrusive_list_node() : value{T{}} {}
 	template<typename... Args>
 	intrusive_list_node(Args&&... args) : value{std::forward<Args>(args)...} {}
 
@@ -127,6 +128,7 @@ public:
 				rc = on_accept_cmpl(*request_info, cqe->res);
 				break;
 			case ring_request_type::recvmsg:
+				rc = on_recvmsg_cmpl(*request_info, cqe->res);
 				break;
 			}
 			pending_requests.erase(*request_info);
@@ -150,6 +152,7 @@ private:
 	}
 
 	int on_accept_cmpl(ring_request_info const& info, int rc) {
+		(void) info;
 		if (rc < 0) {
 			std::cerr << "Error accepting connection: " << strerror(-rc) << std::endl;
 			return 1;
@@ -218,6 +221,7 @@ private:
 		case client_request_type::cwd:
 		case client_request_type::env:
 		case client_request_type::args:
+			(void) client;
 			break;
 		default:
 			std::cerr << "Error: unknown client request type" << std::endl;
@@ -291,7 +295,14 @@ int main(int argc, char *argv[]) {
 
 	ulab::server s{sockfd};
 
-	s.run();
+	try {
+		s.run();
+	} catch (...) {
+		unlink(socket_path);
+		throw;
+	}
+
+	unlink(socket_path);
 
 	return 0;
 }
