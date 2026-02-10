@@ -1,10 +1,15 @@
 #include "protocol.hpp"
-#include <cstring>
+
+#include <complex.h>
+#include <iterator>
 #include <sys/socket.h>
 #include <sys/un.h>
 
-#include <iostream>
 #include <unistd.h>
+
+#include <cstring>
+#include <filesystem>
+#include <iostream>
 
 namespace ulab {
 
@@ -76,5 +81,69 @@ int main(int argc, char *argv[]) {
 	ulab::sendfd(sockfd, STDOUT_FILENO, ulab::client_request_type::stdout_fd);
 	ulab::sendfd(sockfd, STDERR_FILENO, ulab::client_request_type::stderr_fd);
 
-	return 0;
+	auto cwd = std::filesystem::current_path().string();
+	
+	char buf[4096];
+	// TODO be rigorous about sizes, buffers
+	ulab::client_request& request = *reinterpret_cast<ulab::client_request*>(buf);
+	request.type = ulab::client_request_type::cwd;
+	request.total_len = sizeof(request) + cwd.size() + 1;
+	std::strncpy(request.payload[0].cwd, cwd.c_str(), sizeof(buf) - sizeof(request) - 1);
+	rc = send(sockfd, buf, request.total_len, 0);
+	if (rc == -1) {
+		std::cerr << "Error sending cwd: " << strerror(errno) << std::endl;
+		return 1;
+	}
+
+	request.type = ulab::client_request_type::args;
+	size_t offset = 0;
+	for (int i = 2; i < argc; i++) {
+		size_t arg_len = std::strlen(argv[i]) + 1;
+		if (offset + arg_len > sizeof(buf) - sizeof(request) - sizeof(request.payload[0].args.argc)) {
+			std::cerr << "Error: total length of arguments exceeds buffer size" << std::endl;
+			return 1;
+		}
+		std::strncpy(&buf[offsetof(ulab::client_request, payload[0].args.argz[0]) + offset], argv[i], arg_len);
+		offset += arg_len;
+	}
+	request.payload[0].args.argc = argc - 2;
+	request.total_len = sizeof(request) + offset + sizeof(request.payload[0].args.argc);
+	rc = send(sockfd, buf, request.total_len, 0);
+
+	if (rc == -1) {
+		std::cerr << "Error sending arguments: " << strerror(errno) << std::endl;
+		return 1;
+	}
+
+	request.type = ulab::client_request_type::env;
+	offset = 0;
+	for (char** env = environ; *env != nullptr; env++) {
+		size_t var_len = std::strlen(*env) + 1;
+		if (offset + var_len > sizeof(buf) - sizeof(request) - sizeof(request.payload[0].env.num_vars)) {
+			std::cerr << "Error: total length of environment variables exceeds buffer size" << std::endl;
+			return 1;
+		}
+		std::strncpy(&buf[offsetof(ulab::client_request, payload[0].env.vars[0]) + offset], *env, var_len);
+		offset += var_len;
+	}
+	request.payload[0].env.num_vars = offset > 0 ? (offset / (sizeof(char*))) : 0;
+	request.total_len = sizeof(request) + offset + sizeof(request.payload[0].env.num_vars);
+
+	rc = send(sockfd, buf, request.total_len, 0);
+	if (rc == -1) {
+		std::cerr << "Error sending environment variables: " << strerror(errno) << std::endl;
+		return 1;
+	}
+
+	msghdr msg{};
+	msg.msg_iovlen = 1;
+	iovec iov;
+	iov.iov_base = buf;
+	iov.iov_len = sizeof(buf);
+	msg.msg_iov = &iov;	
+	msg.msg_control = nullptr;
+	msg.msg_controllen = 0;
+	rc = recvmsg(sockfd, &msg, 0);
+
+	return rc;
 }

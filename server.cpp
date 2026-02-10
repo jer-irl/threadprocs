@@ -1,10 +1,15 @@
 #include "protocol.hpp"
 
 #include <liburing.h>
-
 #include <liburing/io_uring.h>
+
+#include <bits/types/struct_iovec.h>
+#include <linux/sched.h>
+#include <sys/mman.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
+#include <sys/types.h>
 #include <sys/un.h>
 
 #include <errno.h>
@@ -14,6 +19,7 @@
 #include <iostream>
 #include <memory>
 #include <optional>
+#include <utility>
 #include <vector>
 
 namespace ulab {
@@ -77,6 +83,12 @@ struct ring_request_info {
 		struct {
 			client_info* client;
 			msghdr msg;
+			iovec iov;
+			char buf[4096];
+			union {
+				struct cmsghdr align[0];
+				char control_buf[CMSG_SPACE(sizeof(int))];
+			} control_un;
 		} recvmsg;
 	} info;
 };
@@ -96,10 +108,41 @@ struct client_info {
 	std::vector<std::string> env;
 	std::vector<std::string> args;
 
+	struct exec_info {
+		pid_t tid_in_child; // also futex
+		pid_t tid_in_parent;
+		std::byte* stack_low;
+		std::byte* stack_high;
+		std::size_t stack_size;
+	};
+
+	std::optional<exec_info> exec_info;
+
 	bool ready_to_exec() const {
 		return conn_fd != -1 && stdout_fd != -1 && stderr_fd != -1 && stdin_fd != -1 && !args.empty();
 	}
 };
+
+int get_fd_from_cmsg(msghdr& msg) {
+	for (cmsghdr* cmsg = CMSG_FIRSTHDR(&msg); cmsg != nullptr; cmsg = CMSG_NXTHDR(&msg, cmsg)) {
+		if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_RIGHTS) {
+			int fd = *(int*)CMSG_DATA(cmsg);
+			return fd;
+		}
+	}
+	return -1;
+}
+
+[[noreturn]] void child_thread_main(client_info& client) {
+	// TODO set up stdin, stdout, stderr, cwd, env, and args
+	// execveat or something like that with the provided args and env
+	// maybe use a custom syscall to pass the file descriptors since we already have them in memory and don't want to deal with the complexity of sending them over a socket again
+
+	// For now just pause to keep the process alive so we can inspect it with a debugger
+	sleep(10);
+	syscall(SYS_exit, 0);
+	std::unreachable();
+}
 
 class server {
 public:
@@ -159,6 +202,8 @@ private:
 		}
 		std::cout << "Accepted connection" << std::endl;
 
+		// TODO security: check peer credentials, permissions on socket, etc.
+
 		std::unique_ptr<client_info>& client = clients.emplace_back(std::make_unique<client_info>());
 		client->status = client_info::status::connected;
 		client->conn_fd = rc;
@@ -174,15 +219,24 @@ private:
 
 	int request_recvmsg(client_info& client) {
 		io_uring_sqe *sqe = io_uring_get_sqe(&ring);
-		io_uring_prep_recvmsg(sqe, client.conn_fd, nullptr, MSG_CMSG_CLOEXEC);
 		ring_request_info& recvmsg_request_info = pending_requests.emplace_back();
 		recvmsg_request_info.type = ring_request_type::recvmsg;
-		recvmsg_request_info.info.recvmsg.client = &client;
+		auto& recvmsg_info = recvmsg_request_info.info.recvmsg;
+		recvmsg_info.client = &client;
+		recvmsg_info.msg.msg_iov = &recvmsg_info.iov;
+		recvmsg_info.msg.msg_iovlen = 1;
+		recvmsg_info.iov.iov_base = recvmsg_info.buf;
+		recvmsg_info.iov.iov_len = sizeof(recvmsg_info.buf);
+		recvmsg_info.msg.msg_control = recvmsg_info.control_un.control_buf;
+		recvmsg_info.msg.msg_controllen = sizeof(recvmsg_info.control_un.control_buf);
+		recvmsg_info.msg.msg_name = nullptr;
+		recvmsg_info.msg.msg_namelen = 0;
+		io_uring_prep_recvmsg(sqe, client.conn_fd, &recvmsg_info.msg, MSG_CMSG_CLOEXEC);
 		io_uring_sqe_set_data(sqe, &recvmsg_request_info);
 		return io_uring_submit(&ring);
 	}
 
-	int on_recvmsg_cmpl(ring_request_info const& req_info, int rc) {
+	int on_recvmsg_cmpl(ring_request_info& req_info, int rc) {
 		if (rc < 0) {
 			std::cerr << "Error receiving message: " << strerror(-rc) << std::endl;
 			return 1;
@@ -190,7 +244,7 @@ private:
 		std::cout << "Received message" << std::endl;
 
 		client_info& client = *req_info.info.recvmsg.client;
-		msghdr const& msg = req_info.info.recvmsg.msg;
+		msghdr& msg = req_info.info.recvmsg.msg;
 
 		if (msg.msg_iovlen != 1) {
 			std::cerr << "Error: expected exactly 1 iovec in message" << std::endl;
@@ -216,22 +270,79 @@ private:
 
 		switch (request->type) {
 		case client_request_type::stdin_fd:
+			client.stdin_fd = get_fd_from_cmsg(req_info.info.recvmsg.msg);
+			break;
 		case client_request_type::stdout_fd:
+			client.stdout_fd = get_fd_from_cmsg(req_info.info.recvmsg.msg);
+			break;
 		case client_request_type::stderr_fd:
+			client.stderr_fd = get_fd_from_cmsg(req_info.info.recvmsg.msg);
+			break;
 		case client_request_type::cwd:
+			client.cwd = std::filesystem::path{request->payload[0].cwd};
+			break;
 		case client_request_type::env:
+			client.env = request->get_env();
+			break;
 		case client_request_type::args:
-			(void) client;
+			client.args = request->get_args();
 			break;
 		default:
 			std::cerr << "Error: unknown client request type" << std::endl;
 			return 1;
 		}
 
-		// TODO parse message and update client state
+		if (client.ready_to_exec()) {
+			std::cout << "Client is ready to execute program with args: ";
+			for (const auto& arg : client.args) {
+				std::cout << arg << " ";
+			}
+			std::cout << std::endl;
+			spawn_client(client);
+		}
 
+		request_recvmsg(client);
 
 		return 0;
+	}
+
+	void spawn_client(client_info& client) {
+		clone_args args{};
+		// We want a mostly independent thread that looks almost like a standalone process, but we want
+		// a single virtual memory space.
+		args.flags = CLONE_CHILD_CLEARTID | CLONE_CHILD_SETTID | CLONE_CLEAR_SIGHAND | CLONE_PARENT_SETTID | CLONE_PTRACE | CLONE_VM;
+		// NOT CLONE_FILES, CLONE_FS, CLONE_PARENT, CLONE_THREAD, CLONE_VFORK, 
+		// Not sure: CLONE_SETTLS
+		args.pidfd = 0;
+		args.child_tid = (uint64_t) &client.exec_info->tid_in_child;
+		args.parent_tid = (uint64_t) &client.exec_info->tid_in_parent;
+		args.exit_signal = SIGCHLD;
+
+		client.exec_info->stack_size = 256 * 1024 * 1024; // 256 MiB stack
+		client.exec_info->stack_low = static_cast<std::byte*>(mmap(nullptr, client.exec_info->stack_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_STACK, -1, 0));
+		client.exec_info->stack_high = client.exec_info->stack_low + client.exec_info->stack_size;
+
+		args.stack = (uint64_t)client.exec_info->stack_high;
+		args.stack_size = client.exec_info->stack_size;
+		args.tls = 0;
+		args.set_tid = 0;
+		args.set_tid_size = 0;
+		args.cgroup = 0;
+		
+		int rc = syscall(SYS_clone3, &args, sizeof(args));
+
+		if (rc == -1) {
+			std::cerr << "Error cloning process: " << strerror(errno) << std::endl;
+			return;
+		}
+		if (rc == 0) {
+			// In child
+			child_thread_main(client);
+		} else {
+			// In parent
+		}
+
+		// TODO spawn client process with client.conn_fd, client.stdin_fd, client.stdout_fd, client.stderr_fd, client.cwd, client.env, and client.args
 	}
 
 	int sockfd;
