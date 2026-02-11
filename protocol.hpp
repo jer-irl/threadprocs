@@ -8,17 +8,17 @@
 
 namespace ulab {
 
-enum class client_request_type {
-	stdin_fd,
-	stdout_fd,
-	stderr_fd,
-	cwd,
-	env,
-	args,
-};
 
 struct client_request {
-	client_request_type type;
+	enum class kind {
+		stdin_fd,
+		stdout_fd,
+		stderr_fd,
+		cwd,
+		env,
+		args,
+	};
+	kind type;
 	std::uint64_t total_len;
 	union {
 		char cwd[0];
@@ -33,16 +33,17 @@ struct client_request {
 	} payload[];
 
 	std::vector<std::string> get_env() const {
-		if (type != client_request_type::env) {
+		if (type != kind::env) {
 			throw std::runtime_error("Invalid request type for get_env");
 		}
 		std::vector<std::string> result;
 		size_t offset = 0;
+		char const* const base = payload[0].env.vars;
 		for (size_t i = 0; i < payload->env.num_vars; i++) {
 			if (offset >= total_len - offsetof(client_request, payload[0].env.vars)) {
 				throw std::runtime_error("Malformed env payload: offset exceeds total length");
 			}
-			const char* var = payload->env.vars + offset;
+			const char* var = base + offset;
 			result.emplace_back(var);
 			offset += result.back().size() + 1;
 		}
@@ -50,7 +51,7 @@ struct client_request {
 	}
 
 	std::vector<std::string> get_args() const {
-		if (type != client_request_type::args) {
+		if (type != kind::args) {
 			throw std::runtime_error("Invalid request type for get_args");
 		}
 		std::vector<std::string> result;
@@ -65,6 +66,19 @@ struct client_request {
 		}
 		return result;
 	}
+};
+
+struct server_notification {
+	enum class kind {
+		child_exit,
+	};
+	kind type;
+	union {
+		struct {
+			pid_t tid;
+			int exit_status;
+		} child_exit;
+	};
 };
 
 } // namespace ulab

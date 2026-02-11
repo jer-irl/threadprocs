@@ -1,7 +1,6 @@
 #include "protocol.hpp"
 
 #include <complex.h>
-#include <iterator>
 #include <sys/socket.h>
 #include <sys/un.h>
 
@@ -13,7 +12,7 @@
 
 namespace ulab {
 
-void sendfd(int sockfd, int fd_to_send, client_request_type request_type) {
+void sendfd(int sockfd, int fd_to_send, client_request::kind request_type) {
 	struct msghdr msg{};
 	struct iovec iov;
 	client_request request{request_type, sizeof(client_request)};
@@ -53,6 +52,8 @@ int main(int argc, char *argv[]) {
 		return 1;
 	}
 
+	std::cout << "Launcher PID " << getpid() << std::endl;
+
 	char const* const socket_path = argv[1];
 
 	int sockfd = socket(AF_UNIX, SOCK_SEQPACKET, 0);
@@ -77,16 +78,16 @@ int main(int argc, char *argv[]) {
 		return 1;
 	}
 
-	ulab::sendfd(sockfd, STDIN_FILENO, ulab::client_request_type::stdin_fd);
-	ulab::sendfd(sockfd, STDOUT_FILENO, ulab::client_request_type::stdout_fd);
-	ulab::sendfd(sockfd, STDERR_FILENO, ulab::client_request_type::stderr_fd);
+	ulab::sendfd(sockfd, STDIN_FILENO, ulab::client_request::kind::stdin_fd);
+	ulab::sendfd(sockfd, STDOUT_FILENO, ulab::client_request::kind::stdout_fd);
+	ulab::sendfd(sockfd, STDERR_FILENO, ulab::client_request::kind::stderr_fd);
 
 	auto cwd = std::filesystem::current_path().string();
 	
 	char buf[4096];
 	// TODO be rigorous about sizes, buffers
 	ulab::client_request& request = *reinterpret_cast<ulab::client_request*>(buf);
-	request.type = ulab::client_request_type::cwd;
+	request.type = ulab::client_request::kind::cwd;
 	request.total_len = sizeof(request) + cwd.size() + 1;
 	std::strncpy(request.payload[0].cwd, cwd.c_str(), sizeof(buf) - sizeof(request) - 1);
 	rc = send(sockfd, buf, request.total_len, 0);
@@ -95,7 +96,7 @@ int main(int argc, char *argv[]) {
 		return 1;
 	}
 
-	request.type = ulab::client_request_type::args;
+	request.type = ulab::client_request::kind::args;
 	size_t offset = 0;
 	for (int i = 2; i < argc; i++) {
 		size_t arg_len = std::strlen(argv[i]) + 1;
@@ -115,8 +116,9 @@ int main(int argc, char *argv[]) {
 		return 1;
 	}
 
-	request.type = ulab::client_request_type::env;
+	request.type = ulab::client_request::kind::env;
 	offset = 0;
+	int num_vars = 0;
 	for (char** env = environ; *env != nullptr; env++) {
 		size_t var_len = std::strlen(*env) + 1;
 		if (offset + var_len > sizeof(buf) - sizeof(request) - sizeof(request.payload[0].env.num_vars)) {
@@ -125,8 +127,9 @@ int main(int argc, char *argv[]) {
 		}
 		std::strncpy(&buf[offsetof(ulab::client_request, payload[0].env.vars[0]) + offset], *env, var_len);
 		offset += var_len;
+		num_vars++;
 	}
-	request.payload[0].env.num_vars = offset > 0 ? (offset / (sizeof(char*))) : 0;
+	request.payload[0].env.num_vars = num_vars;
 	request.total_len = sizeof(request) + offset + sizeof(request.payload[0].env.num_vars);
 
 	rc = send(sockfd, buf, request.total_len, 0);
@@ -144,6 +147,14 @@ int main(int argc, char *argv[]) {
 	msg.msg_control = nullptr;
 	msg.msg_controllen = 0;
 	rc = recvmsg(sockfd, &msg, 0);
+
+	ulab::server_notification& notification = *reinterpret_cast<ulab::server_notification*>(buf);
+	std::cout << "Received notification from server" << std::endl;
+	switch (notification.type) {
+		case ulab::server_notification::kind::child_exit:
+			std::cout << "Child process with TID " << notification.child_exit.tid << " exited with status " << notification.child_exit.exit_status << std::endl;
+			break;
+	}
 
 	return rc;
 }

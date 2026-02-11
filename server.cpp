@@ -1,5 +1,7 @@
 #include "protocol.hpp"
 
+#include <csignal>
+#include <cstdlib>
 #include <liburing.h>
 #include <liburing/io_uring.h>
 
@@ -27,6 +29,7 @@ namespace ulab {
 enum class ring_request_type {
 	accept,
 	recvmsg,
+	waitid,
 };
 
 template<typename T>
@@ -81,7 +84,7 @@ struct ring_request_info {
 		struct {
 		} accept;
 		struct {
-			client_info* client;
+			std::reference_wrapper<client_info> client;
 			msghdr msg;
 			iovec iov;
 			char buf[4096];
@@ -90,6 +93,10 @@ struct ring_request_info {
 				char control_buf[CMSG_SPACE(sizeof(int))];
 			} control_un;
 		} recvmsg;
+		struct {
+			std::reference_wrapper<client_info> client;
+			siginfo_t siginfo;
+		} waitid;
 	} info;
 };
 
@@ -111,15 +118,18 @@ struct client_info {
 	struct exec_info {
 		pid_t tid_in_child; // also futex
 		pid_t tid_in_parent;
+		int pidfd;
 		std::byte* stack_low;
 		std::byte* stack_high;
 		std::size_t stack_size;
+		std::byte* child_tls;
+		std::size_t child_tls_size;
 	};
 
 	std::optional<exec_info> exec_info;
 
 	bool ready_to_exec() const {
-		return conn_fd != -1 && stdout_fd != -1 && stderr_fd != -1 && stdin_fd != -1 && !args.empty();
+		return conn_fd != -1 && stdout_fd != -1 && stderr_fd != -1 && stdin_fd != -1 && !args.empty() && !env.empty() && !cwd.empty();
 	}
 };
 
@@ -138,9 +148,30 @@ int get_fd_from_cmsg(msghdr& msg) {
 	// execveat or something like that with the provided args and env
 	// maybe use a custom syscall to pass the file descriptors since we already have them in memory and don't want to deal with the complexity of sending them over a socket again
 
-	// For now just pause to keep the process alive so we can inspect it with a debugger
+	sleep(5);
+	std::cout << "in Child" << std::endl;
+	std::cerr << "HERE001" << std::endl;
+	int rc;
+	rc = dup3(client.stdin_fd, STDIN_FILENO, 0);
+	if (rc != STDIN_FILENO) {
+		std::cerr << "Error setting up stdin: " << strerror(errno) << std::endl;
+		std::exit(1);
+	}
+	rc = dup3(client.stdout_fd, STDOUT_FILENO, 0);
+	if (rc != STDOUT_FILENO) {
+		std::cerr << "Error setting up stdout: " << strerror(errno) << std::endl;
+		std::exit(1);
+	}
+	rc = dup3(client.stderr_fd, STDERR_FILENO, 0);
+	if (rc != STDERR_FILENO) {
+		std::cerr << "Error setting up stderr: " << strerror(errno) << std::endl;
+		std::exit(1);
+	}
+
+	std::cout << "Child thread PID " << getpid() << std::endl;
 	sleep(10);
-	syscall(SYS_exit, 0);
+	std::exit(0);
+	// syscall(SYS_exit, 0);
 	std::unreachable();
 }
 
@@ -161,6 +192,9 @@ public:
 			io_uring_cqe *cqe;
 			int rc = io_uring_wait_cqe(&ring, &cqe);
 			if (rc != 0) {
+				if (rc == -EINTR) {
+					continue; // retry if interrupted by signal
+				}
 				std::cerr << "Error waiting for completion: " << strerror(-rc) << std::endl;
 				throw std::runtime_error("Failed to wait for completion");
 			}
@@ -172,6 +206,9 @@ public:
 				break;
 			case ring_request_type::recvmsg:
 				rc = on_recvmsg_cmpl(*request_info, cqe->res);
+				break;
+			case ring_request_type::waitid:
+				rc = on_waitid_cmpl(*request_info, cqe->res);
 				break;
 			}
 			pending_requests.erase(*request_info);
@@ -222,7 +259,7 @@ private:
 		ring_request_info& recvmsg_request_info = pending_requests.emplace_back();
 		recvmsg_request_info.type = ring_request_type::recvmsg;
 		auto& recvmsg_info = recvmsg_request_info.info.recvmsg;
-		recvmsg_info.client = &client;
+		recvmsg_info.client = client;
 		recvmsg_info.msg.msg_iov = &recvmsg_info.iov;
 		recvmsg_info.msg.msg_iovlen = 1;
 		recvmsg_info.iov.iov_base = recvmsg_info.buf;
@@ -237,13 +274,25 @@ private:
 	}
 
 	int on_recvmsg_cmpl(ring_request_info& req_info, int rc) {
+		client_info& client = req_info.info.recvmsg.client;
+
 		if (rc < 0) {
+			if ((rc == -EBADF || rc == -ECONNRESET)) {
+				std::cerr << "Client disconnected" << std::endl;
+				if (client.status == client_info::status::finished) {
+					std::cerr << "Client process already finished, just cleaning up connection" << std::endl;
+				} else {
+					std::cerr << "Client process not finished, but connection was closed. Marking client as closed and cleaning up." << std::endl;
+				}
+				client.status = client_info::status::closed;
+				close(client.conn_fd);
+				return 0;
+			}
 			std::cerr << "Error receiving message: " << strerror(-rc) << std::endl;
 			return 1;
 		}
 		std::cout << "Received message" << std::endl;
 
-		client_info& client = *req_info.info.recvmsg.client;
 		msghdr& msg = req_info.info.recvmsg.msg;
 
 		if (msg.msg_iovlen != 1) {
@@ -269,22 +318,22 @@ private:
 		client_request* request = reinterpret_cast<client_request*>(msg.msg_iov[0].iov_base);
 
 		switch (request->type) {
-		case client_request_type::stdin_fd:
+		case client_request::kind::stdin_fd:
 			client.stdin_fd = get_fd_from_cmsg(req_info.info.recvmsg.msg);
 			break;
-		case client_request_type::stdout_fd:
+		case client_request::kind::stdout_fd:
 			client.stdout_fd = get_fd_from_cmsg(req_info.info.recvmsg.msg);
 			break;
-		case client_request_type::stderr_fd:
+		case client_request::kind::stderr_fd:
 			client.stderr_fd = get_fd_from_cmsg(req_info.info.recvmsg.msg);
 			break;
-		case client_request_type::cwd:
+		case client_request::kind::cwd:
 			client.cwd = std::filesystem::path{request->payload[0].cwd};
 			break;
-		case client_request_type::env:
+		case client_request::kind::env:
 			client.env = request->get_env();
 			break;
-		case client_request_type::args:
+		case client_request::kind::args:
 			client.args = request->get_args();
 			break;
 		default:
@@ -306,43 +355,120 @@ private:
 		return 0;
 	}
 
+	static int spawn_client_impl(clone_args& args, std::unique_ptr<client_info> client_copy) {
+		int rc = syscall(SYS_clone3, &args, sizeof(args));
+		if (rc == -1) {
+			std::cerr << "Error in clone3 syscall: " << strerror(errno) << std::endl;
+			return -1;
+		}
+		if (rc == 0) {
+			// In child,
+			child_thread_main(*client_copy);
+		}
+		else {
+			client_copy.release();
+			return rc;
+		}
+	}
+
 	void spawn_client(client_info& client) {
+		client.exec_info.emplace();
 		clone_args args{};
 		// We want a mostly independent thread that looks almost like a standalone process, but we want
 		// a single virtual memory space.
-		args.flags = CLONE_CHILD_CLEARTID | CLONE_CHILD_SETTID | CLONE_CLEAR_SIGHAND | CLONE_PARENT_SETTID | CLONE_PTRACE | CLONE_VM;
+		args.flags = CLONE_CHILD_CLEARTID | CLONE_CHILD_SETTID | CLONE_CLEAR_SIGHAND | CLONE_PTRACE | CLONE_VM | CLONE_PIDFD;
 		// NOT CLONE_FILES, CLONE_FS, CLONE_PARENT, CLONE_THREAD, CLONE_VFORK, 
 		// Not sure: CLONE_SETTLS
 		args.pidfd = 0;
 		args.child_tid = (uint64_t) &client.exec_info->tid_in_child;
 		args.parent_tid = (uint64_t) &client.exec_info->tid_in_parent;
 		args.exit_signal = SIGCHLD;
+		args.pidfd = (uint64_t) &client.exec_info->pidfd;
 
 		client.exec_info->stack_size = 256 * 1024 * 1024; // 256 MiB stack
 		client.exec_info->stack_low = static_cast<std::byte*>(mmap(nullptr, client.exec_info->stack_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_STACK, -1, 0));
+		if (client.exec_info->stack_low == MAP_FAILED) {
+			std::cerr << "Error allocating stack: " << strerror(errno) << std::endl;
+			return;
+		}
 		client.exec_info->stack_high = client.exec_info->stack_low + client.exec_info->stack_size;
 
 		args.stack = (uint64_t)client.exec_info->stack_high;
 		args.stack_size = client.exec_info->stack_size;
-		args.tls = 0;
+
+		client.exec_info->child_tls_size = 1024 * 1024; // 1 MiB TLS
+		client.exec_info->child_tls = static_cast<std::byte*>(mmap(nullptr, client.exec_info->child_tls_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
+		if (client.exec_info->child_tls == MAP_FAILED) {
+			std::cerr << "Error allocating child TLS: " << strerror(errno) << std::endl;
+			munmap(client.exec_info->stack_low, client.exec_info->stack_size);
+			return;
+		}
+
+		args.tls = reinterpret_cast<std::uint64_t>(client.exec_info->child_tls);
 		args.set_tid = 0;
 		args.set_tid_size = 0;
 		args.cgroup = 0;
-		
-		int rc = syscall(SYS_clone3, &args, sizeof(args));
 
+		std::unique_ptr<client_info> client_copy = std::make_unique<client_info>(client);
+		
+		int rc = spawn_client_impl(args, std::move(client_copy));
 		if (rc == -1) {
 			std::cerr << "Error cloning process: " << strerror(errno) << std::endl;
 			return;
 		}
-		if (rc == 0) {
-			// In child
-			child_thread_main(client);
-		} else {
-			// In parent
-		}
+
+		// In parent
+		client.exec_info->tid_in_parent = rc;
+		close(client.stderr_fd);
+		close(client.stdout_fd);
+		close(client.stdin_fd);
+		client.status = client_info::status::executing;
+		std::cout << "Spawned client process with TID " << rc << std::endl;
+		request_waitid(client);
 
 		// TODO spawn client process with client.conn_fd, client.stdin_fd, client.stdout_fd, client.stderr_fd, client.cwd, client.env, and client.args
+	}
+
+	int request_waitid(client_info& client) {
+		io_uring_sqe *sqe = io_uring_get_sqe(&ring);
+		ring_request_info& req_info = pending_requests.emplace_back();
+		req_info.type = ring_request_type::waitid;
+		auto& wait_info = req_info.info.waitid;
+		wait_info.client = client;
+		io_uring_prep_waitid(sqe, P_PIDFD, client.exec_info->pidfd, &wait_info.siginfo, WEXITED, 0);
+		io_uring_sqe_set_data(sqe, &req_info);
+		return io_uring_submit(&ring);
+	}
+	int on_waitid_cmpl(ring_request_info& req_info, int rc) {
+		if (rc != 0) {
+			std::cerr << "Error waiting for child process: " << strerror(-rc) << " child pid: " << req_info.info.waitid.client.get().exec_info->tid_in_parent << std::endl;
+			return 1;
+		}
+
+		client_info& client = req_info.info.waitid.client;
+		std::cout << "Client process with TID " << client.exec_info->tid_in_parent << " exited with status " << req_info.info.waitid.siginfo.si_status << " and code " << req_info.info.waitid.siginfo.si_code << std::endl;
+
+		if (req_info.info.waitid.siginfo.si_code != CLD_EXITED) {
+			std::cerr << "Warning: child did not exit normally, si_code: " << req_info.info.waitid.siginfo.si_code << std::endl;
+		}
+
+		client.status = client_info::status::finished;
+
+		server_notification notification{server_notification::kind::child_exit, {client.exec_info->tid_in_parent, req_info.info.waitid.siginfo.si_status}};
+		int sent = send(client.conn_fd, &notification, sizeof(notification), 0); // notify client that process has finished
+		if (sent == -1) {
+			std::cerr << "Error sending notification to client: " << strerror(errno) << std::endl;
+		}
+		if (sent != sizeof(notification)) {
+			std::cerr << "Error: sent " << sent << " bytes, expected to send " << sizeof(notification) << " bytes" << std::endl;
+		}
+
+		close(client.conn_fd);
+		close(client.exec_info->pidfd);
+
+		std::cout << "Notified client of process exit" << std::endl;
+
+		return 0;
 	}
 
 	int sockfd;
@@ -359,6 +485,8 @@ int main(int argc, char *argv[]) {
 		std::cerr << "Usage: " << argv[0] << " <socket_path>" << std::endl;
 		return 1;
 	}
+
+	std::cout << "Server PID " << getpid() << std::endl;
 
 	char const* const socket_path = argv[1];
 
