@@ -2,6 +2,7 @@
 
 #include <csignal>
 #include <cstdlib>
+#include <cstring>
 #include <liburing.h>
 #include <liburing/io_uring.h>
 
@@ -148,9 +149,7 @@ int get_fd_from_cmsg(msghdr& msg) {
 	// execveat or something like that with the provided args and env
 	// maybe use a custom syscall to pass the file descriptors since we already have them in memory and don't want to deal with the complexity of sending them over a socket again
 
-	sleep(5);
-	std::cout << "in Child" << std::endl;
-	std::cerr << "HERE001" << std::endl;
+	write(client.stdout_fd, "Hello from child thread!\n", 26);
 	int rc;
 	rc = dup3(client.stdin_fd, STDIN_FILENO, 0);
 	if (rc != STDIN_FILENO) {
@@ -355,7 +354,30 @@ private:
 		return 0;
 	}
 
-	static int spawn_client_impl(clone_args& args, std::unique_ptr<client_info> client_copy) {
+	// https://nullprogram.com/blog/2023/03/23/
+	static int spawn_client_impl(clone_args& args, client_info* client_copy) {
+		void* sp = 0;
+		void* fp = 0;
+		#if defined(__x86_64__)
+			#error "Not supported"
+			asm volatile("mov %%rsp, %0\n\tmov %%rbp, %1" : "=r"(sp), "=r"(fp));
+		#elif defined(__aarch64__)
+			asm volatile("mov %0, sp\n\tmov %1, x29" : "=r"(sp), "=r"(fp));
+		#else
+			#error "Not supported"
+			(void)sp; (void)fp;
+		#endif
+
+		void* prev_fp = *reinterpret_cast<void**>(fp);
+		size_t to_copy = reinterpret_cast<std::uintptr_t>(prev_fp) + 16 - reinterpret_cast<std::uintptr_t>(sp); // copy everything from current stack pointer to the previous frame pointer (inclusive)
+		std::memcpy(reinterpret_cast<void*>(args.stack - to_copy + args.stack_size), sp, to_copy);
+		args.stack = args.stack;
+		args.stack_size = args.stack_size - to_copy;
+		void* new_stack = reinterpret_cast<void*>(args.stack);
+		void* new_stack_high = reinterpret_cast<void*>(args.stack + args.stack_size);
+		(void) new_stack;
+		(void) new_stack_high;
+
 		int rc = syscall(SYS_clone3, &args, sizeof(args));
 		if (rc == -1) {
 			std::cerr << "Error in clone3 syscall: " << strerror(errno) << std::endl;
@@ -366,7 +388,6 @@ private:
 			child_thread_main(*client_copy);
 		}
 		else {
-			client_copy.release();
 			return rc;
 		}
 	}
@@ -376,7 +397,7 @@ private:
 		clone_args args{};
 		// We want a mostly independent thread that looks almost like a standalone process, but we want
 		// a single virtual memory space.
-		args.flags = CLONE_CHILD_CLEARTID | CLONE_CHILD_SETTID | CLONE_CLEAR_SIGHAND | CLONE_PTRACE | CLONE_VM | CLONE_PIDFD;
+		args.flags = CLONE_CHILD_CLEARTID | CLONE_CHILD_SETTID | CLONE_CLEAR_SIGHAND | CLONE_PTRACE | CLONE_VM | CLONE_PIDFD | CLONE_SETTLS;
 		// NOT CLONE_FILES, CLONE_FS, CLONE_PARENT, CLONE_THREAD, CLONE_VFORK, 
 		// Not sure: CLONE_SETTLS
 		args.pidfd = 0;
@@ -393,7 +414,8 @@ private:
 		}
 		client.exec_info->stack_high = client.exec_info->stack_low + client.exec_info->stack_size;
 
-		args.stack = (uint64_t)client.exec_info->stack_high;
+		args.stack = (uint64_t)client.exec_info->stack_low;
+		// args.stack = (uint64_t)client.exec_info->stack_high;
 		args.stack_size = client.exec_info->stack_size;
 
 		client.exec_info->child_tls_size = 1024 * 1024; // 1 MiB TLS
@@ -409,9 +431,9 @@ private:
 		args.set_tid_size = 0;
 		args.cgroup = 0;
 
-		std::unique_ptr<client_info> client_copy = std::make_unique<client_info>(client);
+		client_info* client_copy = new client_info(client);
 		
-		int rc = spawn_client_impl(args, std::move(client_copy));
+		int rc = spawn_client_impl(args, client_copy);
 		if (rc == -1) {
 			std::cerr << "Error cloning process: " << strerror(errno) << std::endl;
 			return;
