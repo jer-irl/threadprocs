@@ -1,7 +1,5 @@
 #include "protocol.hpp"
 
-#include <complex.h>
-#include <condition_variable>
 #include <csignal>
 #include <cstdlib>
 #include <cstring>
@@ -10,8 +8,6 @@
 
 #include <bits/types/struct_iovec.h>
 #include <linux/sched.h>
-#include <mutex>
-#include <pthread.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -120,30 +116,15 @@ struct client_info {
 	std::vector<std::string> env;
 	std::vector<std::string> args;
 
-	class exec_info {
-	public:
-		exec_info() {
-			// pthread_cond_init(&unshared_cond, nullptr);
-			// pthread_attr_init(&attr);
-			// thread = 0;
-		}
-
-		std::mutex unshared_mutex;
-		std::condition_variable unshared_cond;
-		std::thread child_thread;
-		pid_t child_tid;
-
-		// pthread_mutex_t mutex;
-		// pthread_attr_t attr;
-		// pthread_t thread;
-		// pid_t tid_in_child; // also futex
-		// pid_t tid_in_parent;
-		// int pidfd;
-		// std::byte* stack_low;
-		// std::byte* stack_high;
-		// std::size_t stack_size;
-		// std::byte* child_tls;
-		// std::size_t child_tls_size;
+	struct exec_info {
+		pid_t tid_in_child; // also futex
+		pid_t tid_in_parent;
+		int pidfd;
+		std::byte* stack_low;
+		std::byte* stack_high;
+		std::size_t stack_size;
+		std::byte* child_tls;
+		std::size_t child_tls_size;
 	};
 
 	std::optional<exec_info> exec_info;
@@ -161,6 +142,36 @@ int get_fd_from_cmsg(msghdr& msg) {
 		}
 	}
 	return -1;
+}
+
+[[noreturn]] void child_thread_main(client_info& client) {
+	// TODO set up stdin, stdout, stderr, cwd, env, and args
+	// execveat or something like that with the provided args and env
+	// maybe use a custom syscall to pass the file descriptors since we already have them in memory and don't want to deal with the complexity of sending them over a socket again
+
+	write(client.stdout_fd, "Hello from child thread!\n", 26);
+	int rc;
+	rc = dup3(client.stdin_fd, STDIN_FILENO, 0);
+	if (rc != STDIN_FILENO) {
+		std::cerr << "Error setting up stdin: " << strerror(errno) << std::endl;
+		std::exit(1);
+	}
+	rc = dup3(client.stdout_fd, STDOUT_FILENO, 0);
+	if (rc != STDOUT_FILENO) {
+		std::cerr << "Error setting up stdout: " << strerror(errno) << std::endl;
+		std::exit(1);
+	}
+	rc = dup3(client.stderr_fd, STDERR_FILENO, 0);
+	if (rc != STDERR_FILENO) {
+		std::cerr << "Error setting up stderr: " << strerror(errno) << std::endl;
+		std::exit(1);
+	}
+
+	std::cout << "Child thread PID " << getpid() << std::endl;
+	sleep(10);
+	std::exit(0);
+	// syscall(SYS_exit, 0);
+	std::unreachable();
 }
 
 class server {
@@ -343,192 +354,121 @@ private:
 		return 0;
 	}
 
-	// // https://nullprogram.com/blog/2023/03/23/
-	// [[maybe_unused]] static int spawn_client_impl_clone(clone_args& args, client_info* client_copy) {
-	// 	void* sp = 0;
-	// 	void* fp = 0;
-	// 	#if defined(__x86_64__)
-	// 		#error "Not supported"
-	// 		asm volatile("mov %%rsp, %0\n\tmov %%rbp, %1" : "=r"(sp), "=r"(fp));
-	// 	#elif defined(__aarch64__)
-	// 		asm volatile("mov %0, sp\n\tmov %1, x29" : "=r"(sp), "=r"(fp));
-	// 	#else
-	// 		#error "Not supported"
-	// 		(void)sp; (void)fp;
-	// 	#endif
+	// https://nullprogram.com/blog/2023/03/23/
+	static int spawn_client_impl(clone_args& args, client_info* client_copy) {
+		void* sp = 0;
+		void* fp = 0;
+		#if defined(__x86_64__)
+			#error "Not supported"
+			asm volatile("mov %%rsp, %0\n\tmov %%rbp, %1" : "=r"(sp), "=r"(fp));
+		#elif defined(__aarch64__)
+			asm volatile("mov %0, sp\n\tmov %1, x29" : "=r"(sp), "=r"(fp));
+		#else
+			#error "Not supported"
+			(void)sp; (void)fp;
+		#endif
 
-	// 	void* prev_fp = *reinterpret_cast<void**>(fp);
-	// 	size_t to_copy = reinterpret_cast<std::uintptr_t>(prev_fp) + 16 - reinterpret_cast<std::uintptr_t>(sp); // copy everything from current stack pointer to the previous frame pointer (inclusive)
-	// 	std::memcpy(reinterpret_cast<void*>(args.stack - to_copy + args.stack_size), sp, to_copy);
-	// 	args.stack = args.stack;
-	// 	args.stack_size = args.stack_size - to_copy;
-	// 	void* new_stack = reinterpret_cast<void*>(args.stack);
-	// 	void* new_stack_high = reinterpret_cast<void*>(args.stack + args.stack_size);
-	// 	(void) new_stack;
-	// 	(void) new_stack_high;
+		void* prev_fp = *reinterpret_cast<void**>(fp);
+		size_t to_copy = reinterpret_cast<std::uintptr_t>(prev_fp) + 16 - reinterpret_cast<std::uintptr_t>(sp); // copy everything from current stack pointer to the previous frame pointer (inclusive)
+		std::memcpy(reinterpret_cast<void*>(args.stack - to_copy + args.stack_size), sp, to_copy);
+		args.stack = args.stack;
+		args.stack_size = args.stack_size - to_copy;
+		void* new_stack = reinterpret_cast<void*>(args.stack);
+		void* new_stack_high = reinterpret_cast<void*>(args.stack + args.stack_size);
+		(void) new_stack;
+		(void) new_stack_high;
 
-	// 	int rc = syscall(SYS_clone3, &args, sizeof(args));
-	// 	if (rc == -1) {
-	// 		std::cerr << "Error in clone3 syscall: " << strerror(errno) << std::endl;
-	// 		return -1;
-	// 	}
-	// 	if (rc == 0) {
-	// 		// In child,
-	// 		child_thread_main(client_copy);
-	// 	}
-	// 	else {
-	// 		return rc;
-	// 	}
-	// }
+		int rc = syscall(SYS_clone3, &args, sizeof(args));
+		if (rc == -1) {
+			std::cerr << "Error in clone3 syscall: " << strerror(errno) << std::endl;
+			return -1;
+		}
+		if (rc == 0) {
+			// In child,
+			child_thread_main(*client_copy);
+		}
+		else {
+			return rc;
+		}
+	}
 
 	void spawn_client(client_info& client) {
 		client.exec_info.emplace();
+		clone_args args{};
+		// We want a mostly independent thread that looks almost like a standalone process, but we want
+		// a single virtual memory space.
+		args.flags = CLONE_CHILD_CLEARTID | CLONE_CHILD_SETTID | CLONE_CLEAR_SIGHAND | CLONE_PTRACE | CLONE_VM | CLONE_PIDFD | CLONE_SETTLS;
+		// NOT CLONE_FILES, CLONE_FS, CLONE_PARENT, CLONE_THREAD, CLONE_VFORK, 
+		// Not sure: CLONE_SETTLS
+		args.pidfd = 0;
+		args.child_tid = (uint64_t) &client.exec_info->tid_in_child;
+		args.parent_tid = (uint64_t) &client.exec_info->tid_in_parent;
+		args.exit_signal = SIGCHLD;
+		args.pidfd = (uint64_t) &client.exec_info->pidfd;
 
-		{
-			// Wait until child has unshared
-			std::unique_lock lock{client.exec_info->unshared_mutex};
-			client.exec_info->child_thread = std::thread{child_thread_main, &client};
-			client.exec_info->unshared_cond.wait(lock);
+		client.exec_info->stack_size = 256 * 1024 * 1024; // 256 MiB stack
+		client.exec_info->stack_low = static_cast<std::byte*>(mmap(nullptr, client.exec_info->stack_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_STACK, -1, 0));
+		if (client.exec_info->stack_low == MAP_FAILED) {
+			std::cerr << "Error allocating stack: " << strerror(errno) << std::endl;
+			return;
+		}
+		client.exec_info->stack_high = client.exec_info->stack_low + client.exec_info->stack_size;
+
+		args.stack = (uint64_t)client.exec_info->stack_low;
+		// args.stack = (uint64_t)client.exec_info->stack_high;
+		args.stack_size = client.exec_info->stack_size;
+
+		client.exec_info->child_tls_size = 1024 * 1024; // 1 MiB TLS
+		client.exec_info->child_tls = static_cast<std::byte*>(mmap(nullptr, client.exec_info->child_tls_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
+		if (client.exec_info->child_tls == MAP_FAILED) {
+			std::cerr << "Error allocating child TLS: " << strerror(errno) << std::endl;
+			munmap(client.exec_info->stack_low, client.exec_info->stack_size);
+			return;
 		}
 
-		// // We want a mostly independent thread that looks almost like a standalone process, but we want
-		// // a single virtual memory space.
-		// args.flags = CLONE_CHILD_CLEARTID | CLONE_CHILD_SETTID | CLONE_CLEAR_SIGHAND | CLONE_PTRACE | CLONE_VM | CLONE_PIDFD | CLONE_SETTLS;
-		// // NOT CLONE_FILES, CLONE_FS, CLONE_PARENT, CLONE_THREAD, CLONE_VFORK, 
-		// // Not sure: CLONE_SETTLS
-		// args.pidfd = 0;
-		// args.child_tid = (uint64_t) &client.exec_info->tid_in_child;
-		// args.parent_tid = (uint64_t) &client.exec_info->tid_in_parent;
-		// args.exit_signal = SIGCHLD;
-		// args.pidfd = (uint64_t) &client.exec_info->pidfd;
+		args.tls = reinterpret_cast<std::uint64_t>(client.exec_info->child_tls);
+		args.set_tid = 0;
+		args.set_tid_size = 0;
+		args.cgroup = 0;
 
-		// client.exec_info->stack_size = 256 * 1024 * 1024; // 256 MiB stack
-		// client.exec_info->stack_low = static_cast<std::byte*>(mmap(nullptr, client.exec_info->stack_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_STACK, -1, 0));
-		// if (client.exec_info->stack_low == MAP_FAILED) {
-		// 	std::cerr << "Error allocating stack: " << strerror(errno) << std::endl;
-		// 	return;
-		// }
-		// client.exec_info->stack_high = client.exec_info->stack_low + client.exec_info->stack_size;
-
-		// args.stack = (uint64_t)client.exec_info->stack_low;
-		// // args.stack = (uint64_t)client.exec_info->stack_high;
-		// args.stack_size = client.exec_info->stack_size;
-
-		// client.exec_info->child_tls_size = 1024 * 1024; // 1 MiB TLS
-		// client.exec_info->child_tls = static_cast<std::byte*>(mmap(nullptr, client.exec_info->child_tls_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
-		// if (client.exec_info->child_tls == MAP_FAILED) {
-		// 	std::cerr << "Error allocating child TLS: " << strerror(errno) << std::endl;
-		// 	munmap(client.exec_info->stack_low, client.exec_info->stack_size);
-		// 	return;
-		// }
-
-		// args.tls = reinterpret_cast<std::uint64_t>(client.exec_info->child_tls);
-		// args.set_tid = 0;
-		// args.set_tid_size = 0;
-		// args.cgroup = 0;
-
-		// client_info* client_copy = new client_info(client);
+		client_info* client_copy = new client_info(client);
 		
-		// int rc = spawn_client_impl_clone(args, client_copy);
-		// if (rc == -1) {
-		// 	std::cerr << "Error cloning process: " << strerror(errno) << std::endl;
-		// 	return;
-		// }
+		int rc = spawn_client_impl(args, client_copy);
+		if (rc == -1) {
+			std::cerr << "Error cloning process: " << strerror(errno) << std::endl;
+			return;
+		}
 
 		// In parent
+		client.exec_info->tid_in_parent = rc;
 		close(client.stderr_fd);
 		close(client.stdout_fd);
 		close(client.stdin_fd);
 		client.status = client_info::status::executing;
+		std::cout << "Spawned client process with TID " << rc << std::endl;
 		request_waitid(client);
 
 		// TODO spawn client process with client.conn_fd, client.stdin_fd, client.stdout_fd, client.stderr_fd, client.cwd, client.env, and client.args
 	}
 
-
-	static void* child_thread_main(client_info* client_ptr) {
-		// TODO set up stdin, stdout, stderr, cwd, env, and args
-		// execveat or something like that with the provided args and env
-		// maybe use a custom syscall to pass the file descriptors since we already have them in memory and don't want to deal with the complexity of sending them over a socket again
-		int rc;
-
-		auto& client = *client_ptr;
-
-		write(client.stdout_fd, "Hello from child thread!\n", 26);
-
-		int unshare_flags = CLONE_FILES | CLONE_FS;
-		rc = unshare(unshare_flags);
-		if (rc != 0) {
-			std::cerr << "Error in unshare syscall: " << strerror(errno) << std::endl;
-			std::exit(1);
-		}
-
-		client.exec_info->child_tid = syscall(SYS_gettid);
-
-		{
-			auto lock = std::scoped_lock{client.exec_info->unshared_mutex};
-			client.exec_info->unshared_cond.notify_one();
-		}
-
-		// pthread_mutex_lock(&client.exec_info->mutex);
-		// pthread_cond_signal(&client.exec_info->unshared_cond);
-		// pthread_mutex_unlock(&client.exec_info->mutex);
-
-		rc = dup3(client.stdin_fd, STDIN_FILENO, 0);
-		if (rc != STDIN_FILENO) {
-			std::cerr << "Error setting up stdin: " << strerror(errno) << std::endl;
-			std::exit(1);
-		}
-		rc = dup3(client.stdout_fd, STDOUT_FILENO, 0);
-		if (rc != STDOUT_FILENO) {
-			std::cerr << "Error setting up stdout: " << strerror(errno) << std::endl;
-			std::exit(1);
-		}
-		rc = dup3(client.stderr_fd, STDERR_FILENO, 0);
-		if (rc != STDERR_FILENO) {
-			std::cerr << "Error setting up stderr: " << strerror(errno) << std::endl;
-			std::exit(1);
-		}
-
-		std::cout << "Child thread TID " << gettid() << std::endl;
-		sleep(60);
-		return nullptr;
-		std::unreachable();
-	}
-
 	int request_waitid(client_info& client) {
-		// // io_uring_sqe *sqe = io_uring_get_sqe(&ring);
+		io_uring_sqe *sqe = io_uring_get_sqe(&ring);
 		ring_request_info& req_info = pending_requests.emplace_back();
 		req_info.type = ring_request_type::waitid;
 		auto& wait_info = req_info.info.waitid;
 		wait_info.client = client;
-
-		auto const thread_id = client.exec_info->child_tid;
-		struct sigaction new_;
-		new_.sa_handler = SIG_DFL;
-		struct sigaction old;
-		int rc2= sigaction(SIGCHLD, &new_, &old);
-
-		(void) rc2;
-
-		int rc = waitpid(thread_id, &wait_info.siginfo.si_code, 0);
-		// int rc = waitid(P_PID, thread_id, &wait_info.siginfo, WEXITED | __WALL);
-		if (rc != 0) {
-			std::cerr << "Error in waitid syscall: " << strerror(errno) << std::endl;
-			return 1;
-		}
-		// io_uring_prep_waitid(sqe, P_PID, thread_id, &wait_info.siginfo, WEXITED | __WALL, 0);
-		// io_uring_sqe_set_data(sqe, &req_info);
+		io_uring_prep_waitid(sqe, P_PIDFD, client.exec_info->pidfd, &wait_info.siginfo, WEXITED, 0);
+		io_uring_sqe_set_data(sqe, &req_info);
 		return io_uring_submit(&ring);
 	}
 	int on_waitid_cmpl(ring_request_info& req_info, int rc) {
-		client_info& client = req_info.info.waitid.client;
 		if (rc != 0) {
-			std::cerr << "Error waiting for child process: " << strerror(-rc) << " child tid: " << client.exec_info->child_tid << std::endl;
+			std::cerr << "Error waiting for child process: " << strerror(-rc) << " child pid: " << req_info.info.waitid.client.get().exec_info->tid_in_parent << std::endl;
 			return 1;
 		}
 
-		std::cout << "Client process with TID " << client.exec_info->child_tid << " exited with status " << req_info.info.waitid.siginfo.si_status << " and code " << req_info.info.waitid.siginfo.si_code << std::endl;
+		client_info& client = req_info.info.waitid.client;
+		std::cout << "Client process with TID " << client.exec_info->tid_in_parent << " exited with status " << req_info.info.waitid.siginfo.si_status << " and code " << req_info.info.waitid.siginfo.si_code << std::endl;
 
 		if (req_info.info.waitid.siginfo.si_code != CLD_EXITED) {
 			std::cerr << "Warning: child did not exit normally, si_code: " << req_info.info.waitid.siginfo.si_code << std::endl;
@@ -536,7 +476,7 @@ private:
 
 		client.status = client_info::status::finished;
 
-		server_notification notification{server_notification::kind::child_exit, {static_cast<pid_t>(client.exec_info->child_tid), req_info.info.waitid.siginfo.si_status}};
+		server_notification notification{server_notification::kind::child_exit, {client.exec_info->tid_in_parent, req_info.info.waitid.siginfo.si_status}};
 		int sent = send(client.conn_fd, &notification, sizeof(notification), 0); // notify client that process has finished
 		if (sent == -1) {
 			std::cerr << "Error sending notification to client: " << strerror(errno) << std::endl;
@@ -545,8 +485,8 @@ private:
 			std::cerr << "Error: sent " << sent << " bytes, expected to send " << sizeof(notification) << " bytes" << std::endl;
 		}
 
-		client.exec_info->child_thread.join();
 		close(client.conn_fd);
+		close(client.exec_info->pidfd);
 
 		std::cout << "Notified client of process exit" << std::endl;
 
