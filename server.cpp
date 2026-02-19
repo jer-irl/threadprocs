@@ -1,8 +1,5 @@
 #include "protocol.hpp"
 
-#include <csignal>
-#include <cstdlib>
-#include <cstring>
 #include <liburing.h>
 #include <liburing/io_uring.h>
 
@@ -18,6 +15,9 @@
 #include <errno.h>
 #include <fcntl.h>
 
+#include <csignal>
+#include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <iostream>
 #include <memory>
@@ -120,8 +120,8 @@ struct client_info {
 		pid_t tid_in_child; // also futex
 		pid_t tid_in_parent;
 		int pidfd;
-		std::byte* stack_low;
-		std::byte* stack_high;
+		std::byte* stack_area_low;
+		std::byte* stack_area_high;
 		std::size_t stack_size;
 		std::byte* child_tls;
 		std::size_t child_tls_size;
@@ -169,8 +169,8 @@ int get_fd_from_cmsg(msghdr& msg) {
 
 	std::cout << "Child thread PID " << getpid() << std::endl;
 	sleep(10);
-	std::exit(0);
-	// syscall(SYS_exit, 0);
+	// std::exit(0);
+	syscall(SYS_exit, 0);
 	std::unreachable();
 }
 
@@ -355,37 +355,61 @@ private:
 	}
 
 	// https://nullprogram.com/blog/2023/03/23/
-	static int spawn_client_impl(clone_args& args, client_info* client_copy) {
-		void* sp = 0;
-		void* fp = 0;
+
+	// 0x9000 <- start of copied stack frame (fp pointed-to)
+	// 0x8000 <- new sp
+	// 0x1000 <- new stack variable to syscall
+	// stack size = 0x7000
+
+	__attribute__((noinline)) static int spawn_client_impl(clone_args& args, client_info* client) {
+		void* sp = nullptr;
+		void* fp = nullptr;
+		void* fp_deref = nullptr;
+		size_t to_copy = 0;
+		void* new_sp = nullptr;
+		void* new_fp = nullptr;
+		void* new_fp_deref = nullptr;
+		size_t adjusted_stack_size = 0;
+		void* args_stack = reinterpret_cast<void*>(args.stack);
+		(void) args_stack;
+		asm volatile("" : "+m" (client));
 		#if defined(__x86_64__)
 			#error "Not supported"
 			asm volatile("mov %%rsp, %0\n\tmov %%rbp, %1" : "=r"(sp), "=r"(fp));
 		#elif defined(__aarch64__)
-			asm volatile("mov %0, sp\n\tmov %1, x29" : "=r"(sp), "=r"(fp));
+			asm volatile("mov %0, sp\n\tmov %1, fp" : "=r"(sp), "=r"(fp));
 		#else
 			#error "Not supported"
 			(void)sp; (void)fp;
 		#endif
 
-		void* prev_fp = *reinterpret_cast<void**>(fp);
-		size_t to_copy = reinterpret_cast<std::uintptr_t>(prev_fp) + 16 - reinterpret_cast<std::uintptr_t>(sp); // copy everything from current stack pointer to the previous frame pointer (inclusive)
-		std::memcpy(reinterpret_cast<void*>(args.stack - to_copy + args.stack_size), sp, to_copy);
-		args.stack = args.stack;
-		args.stack_size = args.stack_size - to_copy;
+		fp_deref = *reinterpret_cast<void**>(fp);
+
+		to_copy = reinterpret_cast<std::uintptr_t>(fp_deref) - reinterpret_cast<std::uintptr_t>(sp);
+		new_sp = reinterpret_cast<void*>(args.stack + args.stack_size - to_copy);
+		new_fp = reinterpret_cast<void*>(reinterpret_cast<std::uintptr_t>(new_sp) + (reinterpret_cast<std::uintptr_t>(fp) - reinterpret_cast<std::uintptr_t>(sp)));
+		new_fp_deref = reinterpret_cast<void*>(reinterpret_cast<std::uintptr_t>(fp_deref) - reinterpret_cast<std::uintptr_t>(fp) + reinterpret_cast<std::uintptr_t>(new_fp));
+		adjusted_stack_size = args.stack_size - to_copy;
+		std::memcpy(new_sp, sp, to_copy);
+		*reinterpret_cast<void**>(new_fp) = new_fp_deref;
+
+		args.stack_size = adjusted_stack_size;
 		void* new_stack = reinterpret_cast<void*>(args.stack);
-		void* new_stack_high = reinterpret_cast<void*>(args.stack + args.stack_size);
+		void* new_stack_area_high = reinterpret_cast<void*>(args.stack + args.stack_size);
 		(void) new_stack;
-		(void) new_stack_high;
+		(void) new_stack_area_high;
 
 		int rc = syscall(SYS_clone3, &args, sizeof(args));
 		if (rc == -1) {
 			std::cerr << "Error in clone3 syscall: " << strerror(errno) << std::endl;
 			return -1;
 		}
+		void* c = client;
+		(void) c;
+
 		if (rc == 0) {
 			// In child,
-			child_thread_main(*client_copy);
+			child_thread_main(*client);
 		}
 		else {
 			return rc;
@@ -397,43 +421,54 @@ private:
 		clone_args args{};
 		// We want a mostly independent thread that looks almost like a standalone process, but we want
 		// a single virtual memory space.
+		// args.flags = CLONE_CHILD_CLEARTID | CLONE_CHILD_SETTID | CLONE_CLEAR_SIGHAND | 0 | CLONE_VM | CLONE_PIDFD | CLONE_SETTLS;
 		args.flags = CLONE_CHILD_CLEARTID | CLONE_CHILD_SETTID | CLONE_CLEAR_SIGHAND | CLONE_PTRACE | CLONE_VM | CLONE_PIDFD | CLONE_SETTLS;
 		// NOT CLONE_FILES, CLONE_FS, CLONE_PARENT, CLONE_THREAD, CLONE_VFORK, 
 		// Not sure: CLONE_SETTLS
 		args.pidfd = 0;
 		args.child_tid = (uint64_t) &client.exec_info->tid_in_child;
 		args.parent_tid = (uint64_t) &client.exec_info->tid_in_parent;
+		// https://sourceware.org/pipermail/gdb/2005-May/022639.html
 		args.exit_signal = SIGCHLD;
 		args.pidfd = (uint64_t) &client.exec_info->pidfd;
 
 		client.exec_info->stack_size = 256 * 1024 * 1024; // 256 MiB stack
-		client.exec_info->stack_low = static_cast<std::byte*>(mmap(nullptr, client.exec_info->stack_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_STACK, -1, 0));
-		if (client.exec_info->stack_low == MAP_FAILED) {
+		client.exec_info->stack_area_low = static_cast<std::byte*>(mmap(nullptr, client.exec_info->stack_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_STACK, -1, 0));
+		if (client.exec_info->stack_area_low == MAP_FAILED) {
 			std::cerr << "Error allocating stack: " << strerror(errno) << std::endl;
 			return;
 		}
-		client.exec_info->stack_high = client.exec_info->stack_low + client.exec_info->stack_size;
+		client.exec_info->stack_area_high = client.exec_info->stack_area_low + client.exec_info->stack_size;
 
-		args.stack = (uint64_t)client.exec_info->stack_low;
-		// args.stack = (uint64_t)client.exec_info->stack_high;
+		args.stack = (uint64_t)client.exec_info->stack_area_low;
 		args.stack_size = client.exec_info->stack_size;
 
 		client.exec_info->child_tls_size = 1024 * 1024; // 1 MiB TLS
 		client.exec_info->child_tls = static_cast<std::byte*>(mmap(nullptr, client.exec_info->child_tls_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
 		if (client.exec_info->child_tls == MAP_FAILED) {
 			std::cerr << "Error allocating child TLS: " << strerror(errno) << std::endl;
-			munmap(client.exec_info->stack_low, client.exec_info->stack_size);
+			munmap(client.exec_info->stack_area_low, client.exec_info->stack_size);
 			return;
 		}
 
 		args.tls = reinterpret_cast<std::uint64_t>(client.exec_info->child_tls);
+		// Minimal ARM64: inherit parent's TPIDR_EL0 so libc TLS accesses work in the child.
+		{
+			unsigned long tp = 0;
+			// Read TPIDR_EL0 (userland thread pointer) on AArch64
+			asm volatile("mrs %0, tpidr_el0" : "=r"(tp));
+			if (tp != 0) args.tls = (std::uint64_t)tp;
+		}
+
+
 		args.set_tid = 0;
 		args.set_tid_size = 0;
 		args.cgroup = 0;
 
-		client_info* client_copy = new client_info(client);
+		std::cerr << "Child stack: " << (void*)args.stack << " - " << (void*)(args.stack + args.stack_size) << std::endl;
+		std::cerr << "Child TLS: " << (void*)args.tls << " - " << (void*)(args.tls + client.exec_info->child_tls_size) << std::endl;
 		
-		int rc = spawn_client_impl(args, client_copy);
+		int rc = spawn_client_impl(args, &client);
 		if (rc == -1) {
 			std::cerr << "Error cloning process: " << strerror(errno) << std::endl;
 			return;
