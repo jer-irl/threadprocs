@@ -18,10 +18,7 @@ buildout/launcher: buildout launcher.cpp
 
 test: buildout/dummy_prog1 buildout/server buildout/launcher
 	rm -f buildout/test.sock
-	buildout/server buildout/test.sock &
-	sleep 1
-	buildout/launcher buildout/test.sock buildout/dummy_prog1
-	wait
+	(buildout/server buildout/test.sock & proc=$$!; sleep 1; buildout/launcher buildout/test.sock buildout/dummy_prog1; launcher_rc=$$?; kill -TERM $$proc 2>/dev/null || true; wait $$proc; exit $$launcher_rc)
 
 clean:
 	rm -r buildout
