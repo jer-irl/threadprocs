@@ -16,12 +16,15 @@
 #include <fcntl.h>
 
 #include <csignal>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <memory>
 #include <optional>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -125,6 +128,12 @@ struct client_info {
 		std::size_t stack_size;
 		std::byte* child_tls;
 		std::size_t child_tls_size;
+		std::uintptr_t parent_thread_pointer;
+		std::uintptr_t child_thread_pointer;
+		int parent_errno_before_clone;
+		int parent_errno_after_clone;
+		int child_errno_at_start;
+		int child_errno_after_set;
 	};
 
 	std::optional<exec_info> exec_info;
@@ -144,10 +153,85 @@ int get_fd_from_cmsg(msghdr& msg) {
 	return -1;
 }
 
+std::uintptr_t get_current_thread_pointer() {
+#if defined(__aarch64__)
+	unsigned long tp = 0;
+	asm volatile("mrs %0, tpidr_el0" : "=r"(tp));
+	return static_cast<std::uintptr_t>(tp);
+#else
+	return 0;
+#endif
+}
+
+int create_private_tls_copy(std::byte*& tls_map, std::size_t& tls_map_size, std::uint64_t& tls_pointer) {
+#if defined(__aarch64__)
+	unsigned long current_tp = 0;
+	asm volatile("mrs %0, tpidr_el0" : "=r"(current_tp));
+	if (current_tp == 0) {
+		std::cerr << "Error: parent TPIDR_EL0 is zero" << std::endl;
+		return -1;
+	}
+
+	std::ifstream maps{"/proc/self/maps"};
+	if (!maps) {
+		std::cerr << "Error opening /proc/self/maps" << std::endl;
+		return -1;
+	}
+
+	std::string line;
+	std::uintptr_t region_start = 0;
+	std::uintptr_t region_end = 0;
+	while (std::getline(maps, line)) {
+		unsigned long long start = 0;
+		unsigned long long end = 0;
+		if (std::sscanf(line.c_str(), "%llx-%llx", &start, &end) != 2) {
+			continue;
+		}
+		if (current_tp >= start && current_tp < end) {
+			region_start = static_cast<std::uintptr_t>(start);
+			region_end = static_cast<std::uintptr_t>(end);
+			break;
+		}
+	}
+
+	if (region_start == 0 || region_end <= region_start) {
+		std::cerr << "Error: failed to locate mapping containing TPIDR_EL0" << std::endl;
+		return -1;
+	}
+
+	tls_map_size = region_end - region_start;
+	tls_map = static_cast<std::byte*>(mmap(nullptr, tls_map_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
+	if (tls_map == MAP_FAILED) {
+		std::cerr << "Error allocating child TLS mapping: " << strerror(errno) << std::endl;
+		tls_map = nullptr;
+		tls_map_size = 0;
+		return -1;
+	}
+
+	std::memcpy(tls_map, reinterpret_cast<void*>(region_start), tls_map_size);
+	const std::uintptr_t tp_offset = static_cast<std::uintptr_t>(current_tp) - region_start;
+	tls_pointer = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(tls_map) + tp_offset);
+	return 0;
+#else
+	(void)tls_map;
+	(void)tls_map_size;
+	(void)tls_pointer;
+	std::cerr << "Error: private TLS setup is only implemented on AArch64" << std::endl;
+	return -1;
+#endif
+}
+
 [[noreturn]] void child_thread_main(client_info& client) {
 	// TODO set up stdin, stdout, stderr, cwd, env, and args
 	// execveat or something like that with the provided args and env
 	// maybe use a custom syscall to pass the file descriptors since we already have them in memory and don't want to deal with the complexity of sending them over a socket again
+
+	if (client.exec_info.has_value()) {
+		client.exec_info->child_thread_pointer = get_current_thread_pointer();
+		client.exec_info->child_errno_at_start = errno;
+		errno = 3003;
+		client.exec_info->child_errno_after_set = errno;
+	}
 
 	write(client.stdout_fd, "Hello from child thread!\n", 26);
 	int rc;
@@ -418,6 +502,13 @@ private:
 
 	void spawn_client(client_info& client) {
 		client.exec_info.emplace();
+		client.exec_info->parent_thread_pointer = get_current_thread_pointer();
+		client.exec_info->child_thread_pointer = 0;
+		client.exec_info->parent_errno_before_clone = 1001;
+		client.exec_info->parent_errno_after_clone = 0;
+		client.exec_info->child_errno_at_start = 0;
+		client.exec_info->child_errno_after_set = 0;
+		errno = client.exec_info->parent_errno_before_clone;
 		clone_args args{};
 		// We want a mostly independent thread that looks almost like a standalone process, but we want
 		// a single virtual memory space.
@@ -444,21 +535,12 @@ private:
 		args.stack_size = client.exec_info->stack_size;
 
 		client.exec_info->child_tls_size = 1024 * 1024; // 1 MiB TLS
-		client.exec_info->child_tls = static_cast<std::byte*>(mmap(nullptr, client.exec_info->child_tls_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
-		if (client.exec_info->child_tls == MAP_FAILED) {
-			std::cerr << "Error allocating child TLS: " << strerror(errno) << std::endl;
+		std::uint64_t child_tls_pointer = 0;
+		if (create_private_tls_copy(client.exec_info->child_tls, client.exec_info->child_tls_size, child_tls_pointer) != 0) {
 			munmap(client.exec_info->stack_area_low, client.exec_info->stack_size);
 			return;
 		}
-
-		args.tls = reinterpret_cast<std::uint64_t>(client.exec_info->child_tls);
-		// Minimal ARM64: inherit parent's TPIDR_EL0 so libc TLS accesses work in the child.
-		{
-			unsigned long tp = 0;
-			// Read TPIDR_EL0 (userland thread pointer) on AArch64
-			asm volatile("mrs %0, tpidr_el0" : "=r"(tp));
-			if (tp != 0) args.tls = (std::uint64_t)tp;
-		}
+		args.tls = child_tls_pointer;
 
 
 		args.set_tid = 0;
@@ -476,6 +558,8 @@ private:
 
 		// In parent
 		client.exec_info->tid_in_parent = rc;
+		client.exec_info->parent_errno_after_clone = 2002;
+		errno = client.exec_info->parent_errno_after_clone;
 		close(client.stderr_fd);
 		close(client.stdout_fd);
 		close(client.stdin_fd);
@@ -504,6 +588,23 @@ private:
 
 		client_info& client = req_info.info.waitid.client;
 		std::cout << "Client process with TID " << client.exec_info->tid_in_parent << " exited with status " << req_info.info.waitid.siginfo.si_status << " and code " << req_info.info.waitid.siginfo.si_code << std::endl;
+		std::cout << "TLS self-test: parent_tp=" << (void*)client.exec_info->parent_thread_pointer
+			<< " child_tp=" << (void*)client.exec_info->child_thread_pointer
+			<< " parent_errno_before=" << client.exec_info->parent_errno_before_clone
+			<< " parent_errno_after=" << client.exec_info->parent_errno_after_clone
+			<< " child_errno_start=" << client.exec_info->child_errno_at_start
+			<< " child_errno_after_set=" << client.exec_info->child_errno_after_set
+			<< std::endl;
+
+		if (client.exec_info->child_thread_pointer == client.exec_info->parent_thread_pointer) {
+			std::cerr << "Warning: child TP equals parent TP; TLS likely still shared" << std::endl;
+		}
+		if (client.exec_info->child_errno_after_set != 3003) {
+			std::cerr << "Warning: child errno write did not stick in child TLS" << std::endl;
+		}
+		if (client.exec_info->parent_errno_after_clone == client.exec_info->child_errno_after_set) {
+			std::cerr << "Warning: parent/child errno markers unexpectedly match" << std::endl;
+		}
 
 		if (req_info.info.waitid.siginfo.si_code != CLD_EXITED) {
 			std::cerr << "Warning: child did not exit normally, si_code: " << req_info.info.waitid.siginfo.si_code << std::endl;

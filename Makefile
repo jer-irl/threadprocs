@@ -16,5 +16,12 @@ buildout/server: buildout server.cpp
 buildout/launcher: buildout launcher.cpp
 	g++ $(CXXFLAGS) -o buildout/launcher launcher.cpp $(LIBS)
 
+test: buildout/dummy_prog1 buildout/server buildout/launcher
+	rm -f buildout/test.sock
+	buildout/server buildout/test.sock &
+	sleep 1
+	buildout/launcher buildout/test.sock buildout/dummy_prog1
+	wait
+
 clean:
 	rm -r buildout
