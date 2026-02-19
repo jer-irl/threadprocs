@@ -17,8 +17,8 @@ buildout/launcher: buildout launcher.cpp
 	g++ $(CXXFLAGS) -o buildout/launcher launcher.cpp $(LIBS)
 
 test: buildout/dummy_prog1 buildout/server buildout/launcher
-	rm -f buildout/test.sock
-	(buildout/server buildout/test.sock & proc=$$!; sleep 1; buildout/launcher buildout/test.sock buildout/dummy_prog1; launcher_rc=$$?; kill -TERM $$proc 2>/dev/null || true; wait $$proc; exit $$launcher_rc)
+	rm -f buildout/test.sock buildout/dummy.sock
+	example/dummy_prog1.sh
 
 clean:
 	rm -r buildout
