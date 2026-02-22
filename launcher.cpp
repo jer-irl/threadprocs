@@ -147,23 +147,14 @@ int main(int argc, char *argv[]) {
 	msg.msg_control = nullptr;
 	msg.msg_controllen = 0;
 	rc = recvmsg(sockfd, &msg, 0);
-	if (rc == -1) {
-		std::cerr << "Error receiving notification: " << strerror(errno) << std::endl;
-		return 1;
-	}
-	if (static_cast<std::size_t>(rc) < sizeof(ulab::server_notification)) {
-		std::cerr << "Error: short notification from server" << std::endl;
-		return 1;
-	}
 
 	ulab::server_notification& notification = *reinterpret_cast<ulab::server_notification*>(buf);
 	std::cout << "Received notification from server" << std::endl;
 	switch (notification.type) {
 		case ulab::server_notification::kind::child_exit:
 			std::cout << "Child process with TID " << notification.child_exit.tid << " exited with status " << notification.child_exit.exit_status << std::endl;
-			close(sockfd);
 			break;
 	}
 
-	return 0;
+	return rc;
 }
