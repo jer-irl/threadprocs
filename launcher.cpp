@@ -1,6 +1,5 @@
 #include "protocol.hpp"
 
-#include <complex.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 
@@ -147,6 +146,14 @@ int main(int argc, char *argv[]) {
 	msg.msg_control = nullptr;
 	msg.msg_controllen = 0;
 	rc = recvmsg(sockfd, &msg, 0);
+	if (rc < 0) {
+		std::cerr << "Error receiving notification: " << strerror(errno) << std::endl;
+		return 1;
+	}
+	if (rc == 0) {
+		std::cerr << "Server closed connection before sending notification" << std::endl;
+		return 1;
+	}
 
 	ulab::server_notification& notification = *reinterpret_cast<ulab::server_notification*>(buf);
 	std::cout << "Received notification from server" << std::endl;
@@ -156,5 +163,5 @@ int main(int argc, char *argv[]) {
 			break;
 	}
 
-	return rc;
+	return 0;
 }

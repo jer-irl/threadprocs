@@ -1,11 +1,15 @@
+#include "elf_loader.hpp"
 #include "protocol.hpp"
 
 #include <liburing.h>
 #include <liburing/io_uring.h>
 
 #include <bits/types/struct_iovec.h>
+#include <elf.h>
 #include <linux/sched.h>
+#include <sys/auxv.h>
 #include <sys/mman.h>
+#include <sys/random.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
@@ -14,6 +18,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <unistd.h>
 
 #include <csignal>
 #include <cstdlib>
@@ -24,6 +29,17 @@
 #include <optional>
 #include <utility>
 #include <vector>
+
+extern "C" long child_clone3_and_exec(
+	struct clone_args *args,
+	size_t args_size,
+	void *synthetic_sp,
+	void *entry_point,
+	int stdin_fd,
+	int stdout_fd,
+	int stderr_fd,
+	const char *cwd_path
+);
 
 namespace ulab {
 
@@ -120,11 +136,12 @@ struct client_info {
 		pid_t tid_in_child; // also futex
 		pid_t tid_in_parent;
 		int pidfd;
-		std::byte* stack_area_low;
-		std::byte* stack_area_high;
-		std::size_t stack_size;
-		std::byte* child_tls;
-		std::size_t child_tls_size;
+		void* clone3_stack;       // small stack for clone3 child to trampoline on
+		std::size_t clone3_stack_size;
+		void* process_stack;      // main stack for the loaded program
+		std::size_t process_stack_size;
+		loaded_elf target;
+		loaded_elf interp;        // only valid if target has PT_INTERP
 	};
 
 	std::optional<exec_info> exec_info;
@@ -144,34 +161,94 @@ int get_fd_from_cmsg(msghdr& msg) {
 	return -1;
 }
 
-[[noreturn]] void child_thread_main(client_info& client) {
-	// TODO set up stdin, stdout, stderr, cwd, env, and args
-	// execveat or something like that with the provided args and env
-	// maybe use a custom syscall to pass the file descriptors since we already have them in memory and don't want to deal with the complexity of sending them over a socket again
+// Build the synthetic initial stack that ld-linux.so (or a static-PIE _start) expects.
+// Returns a pointer to the bottom of the structured data (the initial SP value).
+void* build_synthetic_stack(
+	char* stack_top,
+	const std::vector<std::string>& args,
+	const std::vector<std::string>& env,
+	const loaded_elf& target,
+	const loaded_elf* interp)  // nullptr if no interpreter (static binary)
+{
+	char* cursor = stack_top;
 
-	write(client.stdout_fd, "Hello from child thread!\n", 26);
-	int rc;
-	rc = dup3(client.stdin_fd, STDIN_FILENO, 0);
-	if (rc != STDIN_FILENO) {
-		std::cerr << "Error setting up stdin: " << strerror(errno) << std::endl;
-		std::exit(1);
-	}
-	rc = dup3(client.stdout_fd, STDOUT_FILENO, 0);
-	if (rc != STDOUT_FILENO) {
-		std::cerr << "Error setting up stdout: " << strerror(errno) << std::endl;
-		std::exit(1);
-	}
-	rc = dup3(client.stderr_fd, STDERR_FILENO, 0);
-	if (rc != STDERR_FILENO) {
-		std::cerr << "Error setting up stderr: " << strerror(errno) << std::endl;
-		std::exit(1);
+	// --- String data and random bytes (placed at high addresses) ---
+
+	// 16 random bytes for AT_RANDOM
+	cursor -= 16;
+	getrandom(cursor, 16, 0);
+	void* at_random = cursor;
+
+	// Environment strings (packed, null-terminated)
+	std::vector<char*> env_addrs(env.size());
+	for (int i = (int)env.size() - 1; i >= 0; i--) {
+		size_t len = env[i].size() + 1;
+		cursor -= len;
+		std::memcpy(cursor, env[i].c_str(), len);
+		env_addrs[i] = cursor;
 	}
 
-	std::cout << "Child thread PID " << getpid() << std::endl;
-	sleep(10);
-	// std::exit(0);
-	syscall(SYS_exit, 0);
-	std::unreachable();
+	// Argument strings
+	std::vector<char*> arg_addrs(args.size());
+	for (int i = (int)args.size() - 1; i >= 0; i--) {
+		size_t len = args[i].size() + 1;
+		cursor -= len;
+		std::memcpy(cursor, args[i].c_str(), len);
+		arg_addrs[i] = cursor;
+	}
+
+	// --- Structured section (placed at lower addresses) ---
+
+	// Count auxv entries
+	int auxv_count = 7; // PHDR, PHNUM, PHENT, PAGESZ, BASE, ENTRY, RANDOM
+	unsigned long vdso = getauxval(AT_SYSINFO_EHDR);
+	if (vdso) auxv_count++;
+	auxv_count++; // AT_NULL
+
+	size_t struct_words =
+		1                     // argc
+		+ args.size() + 1     // argv pointers + NULL
+		+ env.size() + 1      // envp pointers + NULL
+		+ (size_t)auxv_count * 2;  // auxv pairs (key, value)
+
+	size_t struct_bytes = struct_words * sizeof(unsigned long);
+
+	// Align cursor down to 16 bytes, then subtract structured section
+	cursor = reinterpret_cast<char*>(
+		(reinterpret_cast<uintptr_t>(cursor) - struct_bytes) & ~uintptr_t(15));
+
+	auto* w = reinterpret_cast<unsigned long*>(cursor);
+
+	// argc
+	*w++ = args.size();
+
+	// argv pointers
+	for (size_t i = 0; i < args.size(); i++)
+		*w++ = reinterpret_cast<unsigned long>(arg_addrs[i]);
+	*w++ = 0; // NULL
+
+	// envp pointers
+	for (size_t i = 0; i < env.size(); i++)
+		*w++ = reinterpret_cast<unsigned long>(env_addrs[i]);
+	*w++ = 0; // NULL
+
+	// Auxiliary vector
+	auto auxv = [&](unsigned long key, unsigned long val) {
+		*w++ = key; *w++ = val;
+	};
+
+	auxv(AT_PHDR,   reinterpret_cast<unsigned long>(target.phdr));
+	auxv(AT_PHNUM,  target.phnum);
+	auxv(AT_PHENT,  target.phentsize);
+	auxv(AT_PAGESZ, static_cast<unsigned long>(sysconf(_SC_PAGESIZE)));
+	auxv(AT_BASE,   interp ? reinterpret_cast<unsigned long>(interp->base) : 0);
+	auxv(AT_ENTRY,  reinterpret_cast<unsigned long>(target.entry));
+	auxv(AT_RANDOM, reinterpret_cast<unsigned long>(at_random));
+	if (vdso)
+		auxv(AT_SYSINFO_EHDR, vdso);
+	auxv(AT_NULL, 0);
+
+	return cursor;
 }
 
 class server {
@@ -299,7 +376,7 @@ private:
 			return 1;
 		}
 
-		if (msg.msg_iov[0].iov_len < sizeof(client_request)) {
+		if (rc < (int)sizeof(client_request)) {
 			std::cerr << "Error: message too short to contain client_request" << std::endl;
 			return 1;
 		}
@@ -354,136 +431,114 @@ private:
 		return 0;
 	}
 
-	// https://nullprogram.com/blog/2023/03/23/
-
-	// 0x9000 <- start of copied stack frame (fp pointed-to)
-	// 0x8000 <- new sp
-	// 0x1000 <- new stack variable to syscall
-	// stack size = 0x7000
-
-	__attribute__((noinline)) static int spawn_client_impl(clone_args& args, client_info* client) {
-		void* sp = nullptr;
-		void* fp = nullptr;
-		void* fp_deref = nullptr;
-		size_t to_copy = 0;
-		void* new_sp = nullptr;
-		void* new_fp = nullptr;
-		void* new_fp_deref = nullptr;
-		size_t adjusted_stack_size = 0;
-		void* args_stack = reinterpret_cast<void*>(args.stack);
-		(void) args_stack;
-		asm volatile("" : "+m" (client));
-		#if defined(__x86_64__)
-			#error "Not supported"
-			asm volatile("mov %%rsp, %0\n\tmov %%rbp, %1" : "=r"(sp), "=r"(fp));
-		#elif defined(__aarch64__)
-			asm volatile("mov %0, sp\n\tmov %1, fp" : "=r"(sp), "=r"(fp));
-		#else
-			#error "Not supported"
-			(void)sp; (void)fp;
-		#endif
-
-		fp_deref = *reinterpret_cast<void**>(fp);
-
-		to_copy = reinterpret_cast<std::uintptr_t>(fp_deref) - reinterpret_cast<std::uintptr_t>(sp);
-		new_sp = reinterpret_cast<void*>(args.stack + args.stack_size - to_copy);
-		new_fp = reinterpret_cast<void*>(reinterpret_cast<std::uintptr_t>(new_sp) + (reinterpret_cast<std::uintptr_t>(fp) - reinterpret_cast<std::uintptr_t>(sp)));
-		new_fp_deref = reinterpret_cast<void*>(reinterpret_cast<std::uintptr_t>(fp_deref) - reinterpret_cast<std::uintptr_t>(fp) + reinterpret_cast<std::uintptr_t>(new_fp));
-		adjusted_stack_size = args.stack_size - to_copy;
-		std::memcpy(new_sp, sp, to_copy);
-		*reinterpret_cast<void**>(new_fp) = new_fp_deref;
-
-		args.stack_size = adjusted_stack_size;
-		void* new_stack = reinterpret_cast<void*>(args.stack);
-		void* new_stack_area_high = reinterpret_cast<void*>(args.stack + args.stack_size);
-		(void) new_stack;
-		(void) new_stack_area_high;
-
-		int rc = syscall(SYS_clone3, &args, sizeof(args));
-		if (rc == -1) {
-			std::cerr << "Error in clone3 syscall: " << strerror(errno) << std::endl;
-			return -1;
-		}
-		void* c = client;
-		(void) c;
-
-		if (rc == 0) {
-			// In child,
-			child_thread_main(*client);
-		}
-		else {
-			return rc;
-		}
-	}
-
 	void spawn_client(client_info& client) {
 		client.exec_info.emplace();
+		auto& ei = *client.exec_info;
+
+		// --- Step 1: Load the target ELF binary ---
+		int rc = load_elf(client.args[0].c_str(), ei.target);
+		if (rc != 0) {
+			std::cerr << "Error loading target ELF '" << client.args[0] << "': " << strerror(-rc) << std::endl;
+			client.exec_info.reset();
+			return;
+		}
+		std::cerr << "Loaded target: base=" << ei.target.base
+		          << " entry=" << ei.target.entry
+		          << " phdr=" << ei.target.phdr
+		          << " interp='" << ei.target.interp << "'" << std::endl;
+
+		// --- Step 2: Load the interpreter (ld-linux.so) if the target has PT_INTERP ---
+		void* entry_point = ei.target.entry;
+		loaded_elf* interp_ptr = nullptr;
+
+		if (!ei.target.interp.empty()) {
+			rc = load_elf(ei.target.interp.c_str(), ei.interp);
+			if (rc != 0) {
+				std::cerr << "Error loading interpreter '" << ei.target.interp << "': " << strerror(-rc) << std::endl;
+				munmap(ei.target.map, ei.target.map_len);
+				client.exec_info.reset();
+				return;
+			}
+			entry_point = ei.interp.entry;
+			interp_ptr = &ei.interp;
+			std::cerr << "Loaded interpreter: base=" << ei.interp.base
+			          << " entry=" << ei.interp.entry << std::endl;
+		}
+
+		// --- Step 3: Allocate process stack and build synthetic stack layout ---
+		ei.process_stack_size = 8 * 1024 * 1024; // 8 MiB
+		ei.process_stack = mmap(nullptr, ei.process_stack_size,
+		                        PROT_READ | PROT_WRITE,
+		                        MAP_PRIVATE | MAP_ANONYMOUS | MAP_STACK, -1, 0);
+		if (ei.process_stack == MAP_FAILED) {
+			std::cerr << "Error allocating process stack: " << strerror(errno) << std::endl;
+			client.exec_info.reset();
+			return;
+		}
+
+		char* stack_top = static_cast<char*>(ei.process_stack) + ei.process_stack_size;
+		void* synthetic_sp = build_synthetic_stack(
+			stack_top, client.args, client.env, ei.target, interp_ptr);
+
+		std::cerr << "Synthetic SP: " << synthetic_sp
+		          << " stack range: " << ei.process_stack << " - " << (void*)stack_top << std::endl;
+
+		// --- Step 4: Allocate a small stack for clone3 (child uses it briefly before switching) ---
+		ei.clone3_stack_size = 64 * 1024; // 64 KiB
+		ei.clone3_stack = mmap(nullptr, ei.clone3_stack_size,
+		                       PROT_READ | PROT_WRITE,
+		                       MAP_PRIVATE | MAP_ANONYMOUS | MAP_STACK, -1, 0);
+		if (ei.clone3_stack == MAP_FAILED) {
+			std::cerr << "Error allocating clone3 stack: " << strerror(errno) << std::endl;
+			munmap(ei.process_stack, ei.process_stack_size);
+			client.exec_info.reset();
+			return;
+		}
+
+		// --- Step 5: Set up clone3 args ---
 		clone_args args{};
-		// We want a mostly independent thread that looks almost like a standalone process, but we want
-		// a single virtual memory space.
-		// args.flags = CLONE_CHILD_CLEARTID | CLONE_CHILD_SETTID | CLONE_CLEAR_SIGHAND | 0 | CLONE_VM | CLONE_PIDFD | CLONE_SETTLS;
-		args.flags = CLONE_CHILD_CLEARTID | CLONE_CHILD_SETTID | CLONE_CLEAR_SIGHAND | CLONE_PTRACE | CLONE_VM | CLONE_PIDFD | CLONE_SETTLS;
-		// NOT CLONE_FILES, CLONE_FS, CLONE_PARENT, CLONE_THREAD, CLONE_VFORK, 
-		// Not sure: CLONE_SETTLS
-		args.pidfd = 0;
-		args.child_tid = (uint64_t) &client.exec_info->tid_in_child;
-		args.parent_tid = (uint64_t) &client.exec_info->tid_in_parent;
-		// https://sourceware.org/pipermail/gdb/2005-May/022639.html
+		args.flags = CLONE_VM | CLONE_CHILD_CLEARTID | CLONE_CHILD_SETTID
+		           | CLONE_CLEAR_SIGHAND | CLONE_PIDFD;
+		// NOT: CLONE_SETTLS (ld-linux.so initializes TLS), CLONE_FILES, CLONE_FS,
+		//      CLONE_THREAD, CLONE_PARENT, CLONE_VFORK
+		args.child_tid = reinterpret_cast<uint64_t>(&ei.tid_in_child);
+		args.parent_tid = reinterpret_cast<uint64_t>(&ei.tid_in_parent);
+		args.pidfd = reinterpret_cast<uint64_t>(&ei.pidfd);
 		args.exit_signal = SIGCHLD;
-		args.pidfd = (uint64_t) &client.exec_info->pidfd;
-
-		client.exec_info->stack_size = 256 * 1024 * 1024; // 256 MiB stack
-		client.exec_info->stack_area_low = static_cast<std::byte*>(mmap(nullptr, client.exec_info->stack_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_STACK, -1, 0));
-		if (client.exec_info->stack_area_low == MAP_FAILED) {
-			std::cerr << "Error allocating stack: " << strerror(errno) << std::endl;
-			return;
-		}
-		client.exec_info->stack_area_high = client.exec_info->stack_area_low + client.exec_info->stack_size;
-
-		args.stack = (uint64_t)client.exec_info->stack_area_low;
-		args.stack_size = client.exec_info->stack_size;
-
-		client.exec_info->child_tls_size = 1024 * 1024; // 1 MiB TLS
-		client.exec_info->child_tls = static_cast<std::byte*>(mmap(nullptr, client.exec_info->child_tls_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
-		if (client.exec_info->child_tls == MAP_FAILED) {
-			std::cerr << "Error allocating child TLS: " << strerror(errno) << std::endl;
-			munmap(client.exec_info->stack_area_low, client.exec_info->stack_size);
-			return;
-		}
-
-		args.tls = reinterpret_cast<std::uint64_t>(client.exec_info->child_tls);
-		// Minimal ARM64: inherit parent's TPIDR_EL0 so libc TLS accesses work in the child.
-		{
-			unsigned long tp = 0;
-			// Read TPIDR_EL0 (userland thread pointer) on AArch64
-			asm volatile("mrs %0, tpidr_el0" : "=r"(tp));
-			if (tp != 0) args.tls = (std::uint64_t)tp;
-		}
-
-
+		args.stack = reinterpret_cast<uint64_t>(ei.clone3_stack);
+		args.stack_size = ei.clone3_stack_size;
 		args.set_tid = 0;
 		args.set_tid_size = 0;
 		args.cgroup = 0;
+		args.tls = 0;
 
-		std::cerr << "Child stack: " << (void*)args.stack << " - " << (void*)(args.stack + args.stack_size) << std::endl;
-		std::cerr << "Child TLS: " << (void*)args.tls << " - " << (void*)(args.tls + client.exec_info->child_tls_size) << std::endl;
-		
-		int rc = spawn_client_impl(args, &client);
-		if (rc == -1) {
-			std::cerr << "Error cloning process: " << strerror(errno) << std::endl;
+		// --- Step 6: Clone + trampoline ---
+		std::string cwd_str = client.cwd.string();
+		long child_tid = child_clone3_and_exec(
+			&args, sizeof(args),
+			synthetic_sp,
+			entry_point,
+			client.stdin_fd,
+			client.stdout_fd,
+			client.stderr_fd,
+			cwd_str.c_str());
+
+		if (child_tid < 0) {
+			std::cerr << "Error in clone3: " << strerror((int)-child_tid) << std::endl;
+			munmap(ei.clone3_stack, ei.clone3_stack_size);
+			munmap(ei.process_stack, ei.process_stack_size);
+			client.exec_info.reset();
 			return;
 		}
 
-		// In parent
-		client.exec_info->tid_in_parent = rc;
+		// --- Parent continues ---
+		ei.tid_in_parent = (pid_t)child_tid;
 		close(client.stderr_fd);
 		close(client.stdout_fd);
 		close(client.stdin_fd);
 		client.status = client_info::status::executing;
-		std::cout << "Spawned client process with TID " << rc << std::endl;
+		std::cout << "Spawned client process with TID " << child_tid << std::endl;
 		request_waitid(client);
-
-		// TODO spawn client process with client.conn_fd, client.stdin_fd, client.stdout_fd, client.stderr_fd, client.cwd, client.env, and client.args
 	}
 
 	int request_waitid(client_info& client) {
@@ -567,11 +622,8 @@ int main(int argc, char *argv[]) {
 		.sun_family = AF_UNIX,
 		.sun_path = {0},
 	};
-	char const* const last_written = strncpy(&addr.sun_path[0], socket_path, sizeof(addr.sun_path));
-	if (last_written == nullptr) {
-		perror("Error copying socket path");
-		return 1;
-	} else if (last_written >= &addr.sun_path[sizeof(addr.sun_path) - 1] || addr.sun_path[sizeof(addr.sun_path) - 1] != '\0') {
+	strncpy(&addr.sun_path[0], socket_path, sizeof(addr.sun_path));
+	if (addr.sun_path[sizeof(addr.sun_path) - 1] != '\0') {
 		std::cerr << "Error: socket path is too long" << std::endl;
 		return 1;
 	}
