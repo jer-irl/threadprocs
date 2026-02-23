@@ -39,7 +39,7 @@ inline int load_elf(const char* path, loaded_elf& out) {
 
 	if (memcmp(ehdr.e_ident, ELFMAG, SELFMAG) != 0 ||
 	    ehdr.e_ident[EI_CLASS] != ELFCLASS64 ||
-	    (ehdr.e_type != ET_DYN && ehdr.e_type != ET_EXEC)) {
+	    ehdr.e_type != ET_DYN) {
 		close(fd);
 		return -ENOEXEC;
 	}
