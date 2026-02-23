@@ -14,13 +14,13 @@
 namespace ulab {
 
 struct loaded_elf {
-	void* base;        // base offset: real_addr = (char*)base + vaddr
-	void* entry;       // computed entry point
-	void* phdr;        // program headers in memory
-	uint16_t phnum;
-	uint16_t phentsize;
-	void* map;         // mmap'd region start (for munmap)
-	size_t map_len;    // mmap'd region length
+	void* base{};        // base offset: real_addr = (char*)base + vaddr
+	void* entry{};       // computed entry point
+	void* phdr{};        // program headers in memory
+	uint16_t phnum{};
+	uint16_t phentsize{};
+	void* map{};         // mmap'd region start (for munmap)
+	size_t map_len{};    // mmap'd region length
 	std::string interp; // PT_INTERP path (empty if none)
 };
 

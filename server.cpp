@@ -367,6 +367,16 @@ private:
 			std::cerr << "Error receiving message: " << strerror(-rc) << std::endl;
 			return 1;
 		}
+
+		if (rc == 0) {
+			// Peer closed the connection (orderly shutdown)
+			if (client.status != client_info::status::finished) {
+				std::cerr << "Client connection closed before process finished" << std::endl;
+			}
+			client.status = client_info::status::closed;
+			return 0;
+		}
+
 		std::cout << "Received message" << std::endl;
 
 		msghdr& msg = req_info.info.recvmsg.msg;
@@ -424,6 +434,7 @@ private:
 			}
 			std::cout << std::endl;
 			spawn_client(client);
+			return 0;
 		}
 
 		request_recvmsg(client);
@@ -577,6 +588,15 @@ private:
 
 		close(client.conn_fd);
 		close(client.exec_info->pidfd);
+
+		// Free mmap'd resources now that the child has exited
+		auto& ei = *client.exec_info;
+		munmap(ei.clone3_stack, ei.clone3_stack_size);
+		munmap(ei.process_stack, ei.process_stack_size);
+		munmap(ei.target.map, ei.target.map_len);
+		if (ei.interp.map)
+			munmap(ei.interp.map, ei.interp.map_len);
+		client.exec_info.reset();
 
 		std::cout << "Notified client of process exit" << std::endl;
 
