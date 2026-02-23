@@ -13,14 +13,14 @@ buildout/dummy_server: buildout example/dummy_server.c example/dummy_helper.h
 buildout/dummy_client: buildout example/dummy_client.c example/dummy_helper.h
 	gcc $(CCFLAGS) -o buildout/dummy_client example/dummy_client.c
 
-buildout/trampoline_aarch64.o: buildout trampoline_aarch64.S
-	gcc -c -o buildout/trampoline_aarch64.o trampoline_aarch64.S
+buildout/trampoline_aarch64.o: buildout src/trampoline_aarch64.S
+	gcc -c -o buildout/trampoline_aarch64.o src/trampoline_aarch64.S
 
-buildout/server: buildout server.cpp elf_loader.hpp protocol.hpp buildout/trampoline_aarch64.o
-	g++ $(CXXFLAGS) -o buildout/server server.cpp buildout/trampoline_aarch64.o $(LIBS)
+buildout/server: buildout src/server.cpp src/elf_loader.hpp src/protocol.hpp buildout/trampoline_aarch64.o
+	g++ $(CXXFLAGS) -o buildout/server src/server.cpp buildout/trampoline_aarch64.o $(LIBS)
 
-buildout/launcher: buildout launcher.cpp protocol.hpp
-	g++ $(CXXFLAGS) -o buildout/launcher launcher.cpp
+buildout/launcher: buildout src/launcher.cpp src/protocol.hpp
+	g++ $(CXXFLAGS) -o buildout/launcher src/launcher.cpp
 
 test: buildout/dummy_server buildout/dummy_client buildout/server buildout/launcher
 	rm -f buildout/test.sock buildout/dummy.sock
