@@ -1,9 +1,14 @@
+#include "dummy_helper.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
+
+int sync_count = 0;
+void do_sync(int);
 
 int main(int argc, char* argv[])
 {
@@ -32,6 +37,7 @@ int main(int argc, char* argv[])
 		perror("connect");
 		return 1;
 	}
+	do_sync(sock);
 	printf("Connected to server!\n");
 	const char* message = "Hello from dummy_client!";
 	if (send(sock, message, strlen(message), 0) == -1) {
@@ -47,7 +53,7 @@ int main(int argc, char* argv[])
 	}
 	buf[n] = '\0';
 	printf("Received from server: %s\n", buf);
-
+	do_sync(sock);
 	n = recv(sock, buf, sizeof(buf), 0);
 	if (n == -1) {
 		perror("recv");
@@ -62,12 +68,14 @@ int main(int argc, char* argv[])
 	char* magic_data_ptr = (char*) *((char**) buf);
 	printf("Received magic data pointer from server: %p\n", magic_data_ptr);
 	printf("Reading magic data from server memory: %s\n", magic_data_ptr);
+	do_sync(sock);
 
 	if (send(sock, "Thanks for the magic data!", 27, 0) == -1) {
 		perror("send");
 		return 1;
 	}
 	printf("Sent thank you message to server\n");
+	do_sync(sock);
 	close(sock);
 
 	return 0;

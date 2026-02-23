@@ -7,10 +7,10 @@ all: buildout/dummy_server buildout/dummy_client buildout/server buildout/launch
 buildout:
 	mkdir -p buildout
 
-buildout/dummy_server: buildout example/dummy_server.c
+buildout/dummy_server: buildout example/dummy_server.c example/dummy_helper.h
 	gcc $(CCFLAGS) -o buildout/dummy_server example/dummy_server.c
 
-buildout/dummy_client: buildout example/dummy_client.c
+buildout/dummy_client: buildout example/dummy_client.c example/dummy_helper.h
 	gcc $(CCFLAGS) -o buildout/dummy_client example/dummy_client.c
 
 buildout/trampoline_aarch64.o: buildout trampoline_aarch64.S

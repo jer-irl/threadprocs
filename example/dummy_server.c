@@ -1,9 +1,14 @@
+#include "dummy_helper.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
+
+int sync_count = 0;
+void do_sync(int);
 
 int main(int argc, char* argv[])
 {
@@ -42,6 +47,7 @@ int main(int argc, char* argv[])
 		perror("accept");
 		return 1;
 	}
+	do_sync(client_sock);
 	printf("Client connected!\n");
 	char buf[1024];
 	ssize_t n = recv(client_sock, buf, sizeof(buf) - 1, 0);
@@ -58,6 +64,7 @@ int main(int argc, char* argv[])
 		return 1;
 	}
 	printf("Response sent\n");
+	do_sync(client_sock);
 
 	char* magic_data_spot = (char*) malloc(4096);
 	if (magic_data_spot == NULL) {
@@ -73,6 +80,7 @@ int main(int argc, char* argv[])
 		return 1;
 	}
 	printf("Magic data pointer sent to client\n");
+	do_sync(client_sock);
 
 	n = recv(client_sock, buf, sizeof(buf) - 1, 0);
 	if (n == -1) {
@@ -81,6 +89,7 @@ int main(int argc, char* argv[])
 	}
 	buf[n] = '\0';
 	printf("Received from client: %s\n", buf);
+	do_sync(client_sock);
 	close(client_sock);
 	close(server_sock);
 

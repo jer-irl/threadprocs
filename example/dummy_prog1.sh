@@ -29,12 +29,12 @@ trap cleanup EXIT
 echo "Launching server..."
 ${server_cmd} &
 server_pid=$!
-sleep 1 # Give the server a moment to start up
+sleep 1
 
 echo "Launching dummy server..."
 ${launcher_cmd} ${testpath}/dummy_server ${dummy_sock} &
 dummy_server_pid=$!
-sleep 1 # Give the dummy server a moment to start up
+sleep 1
 
 echo "Launching dummy client..."
 ${launcher_cmd} ${testpath}/dummy_client ${dummy_sock}
