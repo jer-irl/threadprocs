@@ -9,9 +9,6 @@ dummy_sock="${testpath}/dummy.sock"
 server_sock="${testpath}/server.sock"
 rm -f "${dummy_sock}" "${server_sock}"
 
-dummy_server_cmd="${testpath}/dummy_prog1 server ${dummy_sock}"
-dummy_client_cmd="${testpath}/dummy_prog1 client ${dummy_sock}"
-
 server_cmd="${testpath}/server ${server_sock}"
 launcher_cmd="${testpath}/launcher ${server_sock}"
 
@@ -35,9 +32,9 @@ server_pid=$!
 sleep 1 # Give the server a moment to start up
 
 echo "Launching dummy server..."
-${launcher_cmd} ${dummy_server_cmd} &
+${launcher_cmd} ${testpath}/dummy_server ${dummy_sock} &
 dummy_server_pid=$!
 sleep 1 # Give the dummy server a moment to start up
 
 echo "Launching dummy client..."
-${launcher_cmd} ${dummy_client_cmd}
+${launcher_cmd} ${testpath}/dummy_client ${dummy_sock}
