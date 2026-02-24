@@ -1,4 +1,4 @@
-# uspacelab - cursed amalgam of threads AND processes
+# threadprocs
 
 This README was written entirely by a human.  Claude assisted with some code for this proof-of-concept, particularly around the ELF loading and the aarch64 trampoline.
 
@@ -46,6 +46,7 @@ In performance-sensitive applications of significant complexity, I posit that ba
 - [ ] Secure
 - [ ] Documentation
 - [ ] Tooling for peer/service discovery
+- [ ] Safe Rust example
 
 ## Design
 
@@ -179,10 +180,12 @@ We expect that the target program entry point will initialize its own instance o
 
 ### Waved hands and next steps
 
-- Signals
-- Resource leaks on exit
-- Security
-- Interaction with setuid bit?
+- [ ] Test signals and unclean exits
+- [ ] Resource leaks on exit
+	- Hook `mmap()`?
+- [ ] Socket credentials
+- [ ] Memory access, maybe something with `userfaultfd()`
+- [ ] Interaction with setuid bit?  I'm not sure if this is only in `exec()` or if there's a way to recreate it without additional privilege.  Probably not.
 
 ## Comparisons
 
@@ -200,6 +203,3 @@ We expect that the target program entry point will initialize its own instance o
 - ARM register points to pthread_t
 - TLS impl
 - Default position independence
-- 
-
-
