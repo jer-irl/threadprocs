@@ -130,3 +130,4 @@ It quickly became clear that it was best to have multiple independent instances 
 - [ ] Socket credentials
 - [ ] Memory access, maybe something with `userfaultfd()`
 - [ ] Interaction with setuid bit?  I'm not sure if this is only in `exec()` or if there's a way to recreate it without additional privilege.  Probably not.
+- [ ] Ptrace and debugging of targets?

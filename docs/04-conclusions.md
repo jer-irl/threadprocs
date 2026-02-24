@@ -12,6 +12,7 @@ I learned some fun lessons along the way:
 - On Debian, GCC compiles position-independent binaries and libraries by default
 	- Shared libraries pretty much always need position-independence
 	- Executables don't have much runtime cost because branching by offset is inexpensive on aarch64 and x86_64.
+- glibc uses `brk()` in addition to `mmap()` for allocation.  This causes issues with multiple threadprocs colliding
 
 pthreads are a choice, not a law of nature.
 We can reach beyond them entirely from user space.

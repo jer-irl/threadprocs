@@ -57,6 +57,10 @@ The main (known) requirement is that target applications be compiled as "positio
 This is the default with Debian GCC, and used to support various flavors of ASLR.
 This also doesn't carry much overhead over fixed-position executables, and the costs of position independed dynamic shared libraries are well understood and easily mitigated with some effort.
 
+Another major restriction is that because `brk()` and `sbrk()` are address space-global from a kernel perspective, applications can't reliably use them.
+The server sets the `MALLOC_MMAP_THRESHOLD_=0` environment variable to change the default glibc behavior to avoid these.
+Things will break if you try to use this.
+
 Another restriction is of using `mmap` with `MAP_FIXED` in unfriendly ways.
 This is always advised against regardless (see the manpage section [Using MAP_FIXED safely](https://man7.org/linux/man-pages/man2/mmap.2.html)).
 Perhaps a future extension would be to hook `mmap` and related syscalls in the `server` process to enforce applications don't clobber each other.
