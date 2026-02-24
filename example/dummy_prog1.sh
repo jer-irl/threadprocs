@@ -5,8 +5,8 @@ set -o pipefail
 set -o xtrace
 
 testpath="buildout"
-dummy_sock="${testpath}/dummy.sock"
-server_sock="${testpath}/server.sock"
+dummy_sock="${testpath}/examples/dummy.sock"
+server_sock="${testpath}/examples/server.sock"
 rm -f "${dummy_sock}" "${server_sock}"
 
 server_cmd="${testpath}/server ${server_sock}"
@@ -32,9 +32,9 @@ server_pid=$!
 sleep 1
 
 echo "Launching dummy server..."
-${launcher_cmd} ${testpath}/dummy_server ${dummy_sock} &
+${launcher_cmd} ${testpath}/examples/dummy_server ${dummy_sock} &
 dummy_server_pid=$!
 sleep 1
 
 echo "Launching dummy client..."
-${launcher_cmd} ${testpath}/dummy_client ${dummy_sock}
+${launcher_cmd} ${testpath}/examples/dummy_client ${dummy_sock}
