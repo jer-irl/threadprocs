@@ -488,6 +488,14 @@ private:
 		}
 
 		char* stack_top = static_cast<char*>(ei.process_stack) + ei.process_stack_size;
+
+		// Force glibc malloc to use mmap instead of brk for all allocations.
+		// With CLONE_VM, all threadprocs share a single mm_struct and therefore
+		// a single brk region. Each threadproc's independent libc tracks its own
+		// __curbrk, so competing sbrk() calls corrupt or unmap each other's heap.
+		// Setting the mmap threshold to 0 avoids brk entirely.
+		client.env.emplace_back("MALLOC_MMAP_THRESHOLD_=0");
+
 		void* synthetic_sp = build_synthetic_stack(
 			stack_top, client.args, client.env, ei.target, interp_ptr);
 
