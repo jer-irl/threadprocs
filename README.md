@@ -1,4 +1,4 @@
-# uspacelab - cursed alternative to both threads AND processes
+# uspacelab - cursed amalgam of threads AND processes
 
 This README was written entirely by a human.  Claude assisted with some code for this proof-of-concept, particularly around the ELF loading and the aarch64 trampoline.
 
@@ -163,9 +163,12 @@ Once the server is ready to launch a process, the following sequence occurs
 		- `CLONE_THREAD` to avoid making the child look like only a thread
 7. The `extern "C"` trampoline function is called.  This is currently only implemented in ARM assembly.
 8. The `clone3()` system call is invoked, and the return value is checked, as with `fork()`.  If non-zero, the trampoline returns up to the server poll loop.
-9. If in the child
+9. If in the child "thread" of execution, the `dup3()` system call is used to move the launcher `stdin/out/err` file descriptors into the conventional `0/1/2` values.  Once these are installed, the `close_range()` syscall is used to close all other open file descriptors, and avoid leaking any between launched processes.
+10. The trampoline bounces into the entry point, which will typically be in `ld-linux.so`.  This program will do a lot of things, but resources other than virtual memory should be isolated, and as long as the launched program isn't doing `MAP_FIXED` `mmap()` calls unsafely, and isn't trying to scan its address space and touch things it shouldn't, this seems to work.
 
-NOTE: race condition with file descriptors leaking into the wrong "process."
+This is overall similar in some ways to what pthreads implementations must do, but because we bounce to the ELF binary's entry point, we don't have to worry about playing nicely with pthread's supporting data structures.
+Also note that the trampoline and entry point don't get to use libc, and must program directly against the Linux system calls.
+We expect that the target program entry point will initialize its own instance of libc and the associated "global" data structures.
 
 #### Alternatives
 
@@ -174,7 +177,7 @@ NOTE: race condition with file descriptors leaking into the wrong "process."
 - Full dynamic loader
 - dlmopen?
 
-### Waved hands
+### Waved hands and next steps
 
 - Signals
 - Resource leaks on exit
@@ -191,7 +194,7 @@ NOTE: race condition with file descriptors leaking into the wrong "process."
 
 ### Google Serviceweaver / https://dl.acm.org/doi/10.1145/3593856.3595909
 
-## Lessons Learned
+## Lessons learned along the way
 
 - pthreads nptl impl, quite architecture specific.
 - ARM register points to pthread_t
