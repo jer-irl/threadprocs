@@ -8,6 +8,8 @@ Claude assisted with some code for this proof-of-concept, particularly around th
 
 DO NOT use this for anything beyond a trivial test.  Bad things will probably happen.
 
+The code for the demoed programs is at `example/allocstr.cpp` and `example/printstr.cpp`, and neither contains any magic, profs use, or awareness of the server and launcher.
+
 https://github.com/user-attachments/assets/496b68fb-3965-4c44-874f-a96d370c92cb
 
 ## Status
