@@ -1,11 +1,14 @@
 # threadprocs
 
 This repository contains experimental code for thread-like processes, which blend the Posix process model with the pthread programming model.
+The result is multiple threadprocs running different binaries with a _single shared address space_.
 
 All Markdown files were written by hand.
 Claude assisted with some code for this proof-of-concept, particularly around the ELF loading and the aarch64 trampoline.
 
 DO NOT use this for anything beyond a trivial test.  Bad things will probably happen.
+
+https://github.com/user-attachments/assets/496b68fb-3965-4c44-874f-a96d370c92cb
 
 ## Status
 
