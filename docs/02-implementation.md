@@ -88,6 +88,7 @@ Once the server is ready to launch a process, the following sequence occurs
 3. If the target ELF binary specifies an "interpreter" (typically ld-linux.so), the interpreter is also loaded in the same way.  Note that existing mappings of the same interpreter are not uses, and each target gets an independent mapping.
 4. A "top-level" stack is set up for a new instance of the interpreter program (or if not present, `_start`)
 	- Includes the argv and environ arrays
+		- The `MALLOC_MMAP_THRESHOLD_=0` variable is added to prevent glibc from using `brk()`
 	- Entry point for target binary
 5. A "trampoline stack" is set up for the `clone3` system call, but nothing important really needs to go in here except for function arguments.
 6. `clone3()` args are prepared with the following notable pieces

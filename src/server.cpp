@@ -18,6 +18,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <malloc.h>
 #include <unistd.h>
 
 #include <csignal>
@@ -620,6 +621,8 @@ private:
 } // namespace ulab
 
 int main(int argc, char *argv[]) {
+
+	mallopt(M_MMAP_THRESHOLD, 0);
 
 	if (argc != 2) {
 		std::cerr << "Usage: " << argv[0] << " <socket_path>" << std::endl;
