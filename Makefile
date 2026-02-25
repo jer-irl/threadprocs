@@ -15,10 +15,10 @@ LAUNCHER := $(BUILD_DIR)/launcher
 LIBTPROC := $(BUILD_DIR)/libtproc.a
 
 # --- Server -----------------------------------------------------------
-SERVER_SRCS := src/server.cpp src/elf_loader.cpp
-SERVER_ASM  := src/trampoline_aarch64.S
-SERVER_OBJS := $(SERVER_SRCS:src/%.cpp=$(OBJ_DIR)/server/%.o) \
-               $(SERVER_ASM:src/%.S=$(OBJ_DIR)/server/%.o)
+SERVER_SRCS := src/server/server.cpp src/server/elf_loader.cpp
+SERVER_ASM  := src/server/trampoline_aarch64.S
+SERVER_OBJS := $(SERVER_SRCS:src/server/%.cpp=$(OBJ_DIR)/server/%.o) \
+               $(SERVER_ASM:src/server/%.S=$(OBJ_DIR)/server/%.o)
 
 # --- Launcher ---------------------------------------------------------
 LAUNCHER_SRCS := src/launcher.cpp
@@ -59,10 +59,10 @@ $(LIBTPROC): $(LIBTPROC_OBJS) | $(BUILD_DIR)
 
 # --- Compile rules (server) --------------------------------------------
 
-$(OBJ_DIR)/server/%.o: src/%.cpp | $(OBJ_DIR)/server
-	$(CXX) $(CXXFLAGS) $(DEPFLAGS) -I libtproc -c -o $@ $<
+$(OBJ_DIR)/server/%.o: src/server/%.cpp | $(OBJ_DIR)/server
+	$(CXX) $(CXXFLAGS) $(DEPFLAGS) -I src -I libtproc -c -o $@ $<
 
-$(OBJ_DIR)/server/%.o: src/%.S | $(OBJ_DIR)/server
+$(OBJ_DIR)/server/%.o: src/server/%.S | $(OBJ_DIR)/server
 	$(CXX) $(DEPFLAGS) -c -o $@ $<
 
 # --- Compile rules (launcher) ------------------------------------------
