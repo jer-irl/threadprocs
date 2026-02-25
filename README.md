@@ -8,7 +8,14 @@ Claude assisted with some code for this proof-of-concept, particularly around th
 
 DO NOT use this for anything beyond a trivial test.  Bad things will probably happen.
 
-The code for the demoed programs is at `example/allocstr.cpp` and `example/printstr.cpp`, and neither contains any magic, profs use, or awareness of the server and launcher.
+## Elevator Pitch
+
+The `server` utility "hosts" a virtual address space, and by using `launcher` to start programs, those programs can coexist in that address space.
+Applications can share pointers in the virtual address space through some out-of-band mechanism ([Demo](#demo) uses copy/paste, dummy_server/client uses sockets), and then _directly dereference those pointers_, as they're valid in the shared address space.
+
+## Demo
+
+The code for the demoed programs is at `example/allocstr.cpp` and `example/printstr.cpp`, and neither contains any magic (`/proc/[pid]/mem`, etc), nor awareness of the server and launcher.
 
 https://github.com/user-attachments/assets/496b68fb-3965-4c44-874f-a96d370c92cb
 
