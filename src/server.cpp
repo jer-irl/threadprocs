@@ -1,5 +1,6 @@
 #include "elf_loader.hpp"
 #include "protocol.hpp"
+#include "tproc.h"
 
 #include <exception>
 #include <liburing.h>
@@ -170,7 +171,8 @@ void* build_synthetic_stack(
 	const std::vector<std::string>& args,
 	const std::vector<std::string>& env,
 	const loaded_elf& target,
-	const loaded_elf* interp)  // nullptr if no interpreter (static binary)
+	const loaded_elf* interp,           // nullptr if no interpreter (static binary)
+	void* registry_page)
 {
 	char* cursor = stack_top;
 
@@ -202,7 +204,7 @@ void* build_synthetic_stack(
 	// --- Structured section (placed at lower addresses) ---
 
 	// Count auxv entries
-	int auxv_count = 7; // PHDR, PHNUM, PHENT, PAGESZ, BASE, ENTRY, RANDOM
+	int auxv_count = 8; // PHDR, PHNUM, PHENT, PAGESZ, BASE, ENTRY, RANDOM, TPROC_REGISTRY
 	unsigned long vdso = getauxval(AT_SYSINFO_EHDR);
 	if (vdso) auxv_count++;
 	auxv_count++; // AT_NULL
@@ -246,6 +248,7 @@ void* build_synthetic_stack(
 	auxv(AT_BASE,   interp ? reinterpret_cast<unsigned long>(interp->base) : 0);
 	auxv(AT_ENTRY,  reinterpret_cast<unsigned long>(target.entry));
 	auxv(AT_RANDOM, reinterpret_cast<unsigned long>(at_random));
+	auxv(AT_TPROC_REGISTRY, reinterpret_cast<unsigned long>(registry_page));
 	if (vdso)
 		auxv(AT_SYSINFO_EHDR, vdso);
 	auxv(AT_NULL, 0);
@@ -261,6 +264,13 @@ public:
 			std::cerr << "Error initializing io_uring: " << strerror(-rc) << std::endl;
 			throw std::runtime_error("Failed to initialize io_uring");
 		}
+		registry_page = mmap(nullptr, 4096, PROT_READ | PROT_WRITE,
+		                     MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+		if (registry_page == MAP_FAILED) {
+			io_uring_queue_exit(&ring);
+			throw std::runtime_error("Failed to allocate registry page");
+		}
+		std::cerr << "Registry page at " << registry_page << std::endl;
 	}
 
 	void run() {
@@ -512,7 +522,7 @@ private:
 		client.env.emplace_back("MALLOC_MMAP_THRESHOLD_=0");
 
 		void* synthetic_sp = build_synthetic_stack(
-			stack_top, client.args, client.env, ei.target, interp_ptr);
+			stack_top, client.args, client.env, ei.target, interp_ptr, registry_page);
 
 		std::cerr << "Synthetic SP: " << synthetic_sp
 		          << " stack range: " << ei.process_stack << " - " << (void*)stack_top << std::endl;
@@ -630,6 +640,7 @@ private:
 	io_uring ring;
 	intrusive_list<ring_request_info> pending_requests;
 	std::vector<std::unique_ptr<client_info>> clients;
+	void* registry_page{nullptr};
 };
 
 std::filesystem::path g_socket_path;

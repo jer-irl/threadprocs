@@ -1,0 +1,5 @@
+-xc++
+-Wall
+-Wextra
+-std=gnu++23
+-Ilibtproc

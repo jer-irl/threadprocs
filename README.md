@@ -1,7 +1,7 @@
 # threadprocs
 
-This repository contains experimental code for thread-like processes, which blend the Posix process model with the pthread programming model.
-The result is multiple threadprocs running different binaries with a _single shared address space_.
+This repository contains experimental code for thread-like processes, or __multiple programs running in a shared address space__.
+This blends the Posix process model with the pthread programming model.
 
 All Markdown files were written by hand.
 Claude assisted with some code for this proof-of-concept, particularly around the ELF loading and the aarch64 trampoline.
@@ -11,13 +11,18 @@ DO NOT use this for anything beyond a trivial test.  Bad things will probably ha
 ## Elevator Pitch
 
 The `server` utility "hosts" a virtual address space, and by using `launcher` to start programs, those programs can coexist in that address space.
-Applications can share pointers in the virtual address space through some out-of-band mechanism ([Demo](#demo) uses copy/paste, dummy_server/client uses sockets), and then _directly dereference those pointers_, as they're valid in the shared address space.
+Applications can share pointers in the virtual address space through some out-of-band mechanism ([Demo](#demo) uses copy/paste, dummy_server/client uses sockets, libtproc provides server-global scratch space), and then _directly dereference those pointers_, as they're valid in the shared address space.
 
 ## Demo
 
 The code for the demoed programs is at `example/allocstr.cpp` and `example/printstr.cpp`, and neither contains any magic (`/proc/[pid]/mem`, etc), nor awareness of the server and launcher.
 
 https://github.com/user-attachments/assets/496b68fb-3965-4c44-874f-a96d370c92cb
+
+## libtproc
+
+`libtproc` provides very rudimentary detection of execution as a threadproc, and allows hosted threadprocs to access a "server-global" scratch space.
+Applications can build tooling using this space to implement service discovery and bootstrap shared memory-backed IPC.
 
 ## Status
 
@@ -26,7 +31,7 @@ https://github.com/user-attachments/assets/496b68fb-3965-4c44-874f-a96d370c92cb
 - [ ] Production quality
 - [ ] Secure
 - [ ] Documentation
-- [ ] Tooling for peer/service discovery
+- [x] Tooling for peer/service discovery (basic)
 - [ ] Safe Rust example
 
 ## Getting Started

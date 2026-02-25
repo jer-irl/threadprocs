@@ -8,7 +8,6 @@
 
 namespace ulab {
 
-
 struct client_request {
 	enum class kind {
 		stdin_fd,
