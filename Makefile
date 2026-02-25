@@ -19,8 +19,8 @@ $(BUILD_DIR):
 clean:
 	rm -rf $(BUILD_DIR)
 
-$(SERVER): $(BUILD_DIR) src/server.cpp src/elf_loader.hpp src/protocol.hpp src/trampoline_aarch64.S libtproc/tproc.h
-	g++ $(CXXFLAGS) -I libtproc -o $(SERVER) src/server.cpp src/trampoline_aarch64.S $(LIBS)
+$(SERVER): $(BUILD_DIR) src/server.cpp src/elf_loader.hpp src/elf_loader.cpp src/protocol.hpp src/trampoline_aarch64.S libtproc/tproc.h
+	g++ $(CXXFLAGS) -I libtproc -o $(SERVER) src/server.cpp src/elf_loader.cpp src/trampoline_aarch64.S $(LIBS)
 
 $(LAUNCHER): $(BUILD_DIR) src/launcher.cpp src/protocol.hpp
 	g++ $(CXXFLAGS) -o $(LAUNCHER) src/launcher.cpp

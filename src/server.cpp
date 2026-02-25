@@ -135,7 +135,9 @@ struct client_info {
 	std::vector<std::string> env;
 	std::vector<std::string> args;
 
-	struct exec_info {
+	struct ExecInfo {
+		explicit ExecInfo(LoadedElf target) : target{std::move(target)} {}
+
 		pid_t tid_in_child; // also futex
 		pid_t tid_in_parent;
 		int pidfd;
@@ -143,11 +145,11 @@ struct client_info {
 		std::size_t clone3_stack_size;
 		void* process_stack;      // main stack for the loaded program
 		std::size_t process_stack_size;
-		loaded_elf target;
-		loaded_elf interp;        // only valid if target has PT_INTERP
+		LoadedElf target;
+		std::optional<LoadedElf> interp;        // only valid if target has PT_INTERP
 	};
 
-	std::optional<exec_info> exec_info;
+	std::optional<ExecInfo> exec_info;
 
 	bool ready_to_exec() const {
 		return conn_fd != -1 && stdout_fd != -1 && stderr_fd != -1 && stdin_fd != -1 && !args.empty() && !env.empty() && !cwd.empty();
@@ -170,8 +172,8 @@ void* build_synthetic_stack(
 	char* stack_top,
 	const std::vector<std::string>& args,
 	const std::vector<std::string>& env,
-	const loaded_elf& target,
-	const loaded_elf* interp,           // nullptr if no interpreter (static binary)
+	const LoadedElf& target,
+	const LoadedElf* interp,           // nullptr if no interpreter (static binary)
 	void* registry_page)
 {
 	char* cursor = stack_top;
@@ -468,16 +470,14 @@ private:
 	}
 
 	void spawn_client(client_info& client) {
-		client.exec_info.emplace();
-		auto& ei = *client.exec_info;
-
 		// --- Step 1: Load the target ELF binary ---
-		int rc = load_elf(client.args[0].c_str(), ei.target);
-		if (rc != 0) {
-			std::cerr << "Error loading target ELF '" << client.args[0] << "': " << strerror(-rc) << std::endl;
+		auto target_result = LoadedElf::load_from_path(client.args[0]);
+		if (!target_result) {
+			std::cerr << "Error loading target ELF '" << client.args[0] << "': " << strerror(-target_result.error()) << std::endl;
 			client.exec_info.reset();
 			return;
 		}
+		auto& ei = client.exec_info.emplace(std::move(target_result.value()));
 		std::cerr << "Loaded target: base=" << ei.target.base
 		          << " entry=" << ei.target.entry
 		          << " phdr=" << ei.target.phdr
@@ -485,20 +485,19 @@ private:
 
 		// --- Step 2: Load the interpreter (ld-linux.so) if the target has PT_INTERP ---
 		void* entry_point = ei.target.entry;
-		loaded_elf* interp_ptr = nullptr;
 
 		if (!ei.target.interp.empty()) {
-			rc = load_elf(ei.target.interp.c_str(), ei.interp);
-			if (rc != 0) {
-				std::cerr << "Error loading interpreter '" << ei.target.interp << "': " << strerror(-rc) << std::endl;
+			auto interp = LoadedElf::load_from_path(ei.target.interp);
+			if (!interp) {
+				std::cerr << "Error loading interpreter '" << ei.target.interp << "': " << strerror(-interp.error()) << std::endl;
 				munmap(ei.target.map, ei.target.map_len);
 				client.exec_info.reset();
 				return;
 			}
-			entry_point = ei.interp.entry;
-			interp_ptr = &ei.interp;
-			std::cerr << "Loaded interpreter: base=" << ei.interp.base
-			          << " entry=" << ei.interp.entry << std::endl;
+			ei.interp = std::move(interp.value());
+			entry_point = ei.interp.value().entry;
+			std::cerr << "Loaded interpreter: base=" << ei.interp.value().base
+			          << " entry=" << ei.interp.value().entry << std::endl;
 		}
 
 		// --- Step 3: Allocate process stack and build synthetic stack layout ---
@@ -522,7 +521,7 @@ private:
 		client.env.emplace_back("MALLOC_MMAP_THRESHOLD_=0");
 
 		void* synthetic_sp = build_synthetic_stack(
-			stack_top, client.args, client.env, ei.target, interp_ptr, registry_page);
+			stack_top, client.args, client.env, ei.target, ei.interp.transform([](auto& interp) { return &interp; }).value_or(nullptr), registry_page);
 
 		std::cerr << "Synthetic SP: " << synthetic_sp
 		          << " stack range: " << ei.process_stack << " - " << (void*)stack_top << std::endl;
@@ -626,9 +625,6 @@ private:
 		auto& ei = *client.exec_info;
 		munmap(ei.clone3_stack, ei.clone3_stack_size);
 		munmap(ei.process_stack, ei.process_stack_size);
-		munmap(ei.target.map, ei.target.map_len);
-		if (ei.interp.map)
-			munmap(ei.interp.map, ei.interp.map_len);
 		client.exec_info.reset();
 
 		std::cout << "Notified client of process exit" << std::endl;
