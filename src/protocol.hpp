@@ -17,6 +17,7 @@ struct client_request {
 		cwd,
 		env,
 		args,
+		signal,
 	};
 	kind type;
 	std::uint64_t total_len;
@@ -30,6 +31,9 @@ struct client_request {
 			std::uint64_t argc;
 			char argz[0];
 		} args;
+		struct {
+			int signo;
+		} signal;
 	} payload[];
 
 	std::vector<std::string> get_env() const {

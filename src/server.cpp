@@ -1,6 +1,7 @@
 #include "elf_loader.hpp"
 #include "protocol.hpp"
 
+#include <exception>
 #include <liburing.h>
 #include <liburing/io_uring.h>
 
@@ -423,19 +424,32 @@ private:
 		case client_request::kind::args:
 			client.args = request->get_args();
 			break;
+		case client_request::kind::signal: {
+			std::cout << "Received signal notification from client: signo " << request->payload[0].signal.signo << std::endl;
+			if (client.exec_info == std::nullopt || client.status != client_info::status::executing) {
+				std::cerr << "Warning: received signal notification but client process is not executing. Ignoring signal." << std::endl;
+				break;
+			}
+			int rc = kill(client.exec_info->tid_in_parent, request->payload[0].signal.signo);
+			if (rc == -1) {
+				std::cerr << "Error forwarding signal to child process: " << strerror(errno) << std::endl;
+			} else {
+				std::cout << "Forwarded signal " << request->payload[0].signal.signo << " to child process with TID " << client.exec_info->tid_in_parent << std::endl;
+			}
+			break;
+		}
 		default:
 			std::cerr << "Error: unknown client request type" << std::endl;
 			return 1;
 		}
 
-		if (client.ready_to_exec()) {
+		if (client.ready_to_exec() && client.status == client_info::status::connected) {
 			std::cout << "Client is ready to execute program with args: ";
 			for (const auto& arg : client.args) {
 				std::cout << arg << " ";
 			}
 			std::cout << std::endl;
 			spawn_client(client);
-			return 0;
 		}
 
 		request_recvmsg(client);
@@ -618,6 +632,8 @@ private:
 	std::vector<std::unique_ptr<client_info>> clients;
 };
 
+std::filesystem::path g_socket_path;
+
 } // namespace ulab
 
 int main(int argc, char *argv[]) {
@@ -632,11 +648,12 @@ int main(int argc, char *argv[]) {
 	std::cout << "Server PID " << getpid() << std::endl;
 
 	char const* const socket_path = argv[1];
+	ulab::g_socket_path = socket_path;
 
 	struct stat statbuf;
 	int rc = fstatat(AT_FDCWD, socket_path, &statbuf, 0);
 	if (rc == 0) {
-		std::cerr << "Error: file already exists at path '" << socket_path << std::endl;
+		std::cerr << "Error: file already exists at path '" << socket_path << "'" << std::endl;
 		return 1;
 	} else if (errno != ENOENT) {
 		std::cerr << "Error checking socket path: " << strerror(errno) << std::endl;
@@ -674,14 +691,22 @@ int main(int argc, char *argv[]) {
 
 	ulab::server s{sockfd};
 
-	try {
-		s.run();
-	} catch (...) {
-		unlink(socket_path);
-		throw;
-	}
+	constexpr auto cleanup = +[] {
+		std::filesystem::remove(ulab::g_socket_path);
+	};
+	constexpr auto cleanup_sig = +[](int signum) {
+		std::cerr << "Received signal " << signum << ", cleaning up and exiting" << std::endl;
+		cleanup();
+		std::exit(0);
+	};
+	std::atexit(cleanup);
+	std::set_terminate(cleanup);
+	std::signal(SIGINT, cleanup_sig);
+	std::signal(SIGQUIT, cleanup_sig);
 
-	unlink(socket_path);
+	s.run();
+
+	cleanup();
 
 	return 0;
 }

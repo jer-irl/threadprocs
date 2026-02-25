@@ -14,7 +14,7 @@ https://github.com/user-attachments/assets/496b68fb-3965-4c44-874f-a96d370c92cb
 
 ## Status
 
-- [x] _Rough_ [proof of concept example](./example/dummy_prog1.sh), aarch64+Linux only! (Developed in VM on M1 Macbook Air)
+- [x] _Rough_ proof of concept examples in `test/`, aarch64+Linux only! (Developed in VM on M1 Macbook Air)
 - [ ] Architecture agnostic
 - [ ] Production quality
 - [ ] Secure
@@ -32,6 +32,8 @@ Dependencies:
 ```sh
 apt install build-essential liburing-dev
 ```
+
+Notably there is no dependency no ELF libraries aside from Linux system headers, though those would probably make the code nicer.
 
 Building:
 

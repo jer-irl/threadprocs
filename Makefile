@@ -40,5 +40,6 @@ $(BUILD_DIR)/examples/printstr: $(BUILD_DIR) example/sharedstr/printstr.cpp
 	mkdir -p $(BUILD_DIR)/examples
 	g++ $(CXXFLAGS) -o $(BUILD_DIR)/examples/printstr example/sharedstr/printstr.cpp
 
-test: examples $(SERVER) $(LAUNCHER)
-	example/dummy_prog1.sh
+test: examples $(SERVER) $(LAUNCHER) test/dummy_prog1.sh test/stringshare.sh
+	test/dummy_prog1.sh
+	test/stringshare.sh

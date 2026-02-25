@@ -6,6 +6,7 @@
 #include <unistd.h>
 
 #include <cstring>
+#include <csignal>
 #include <filesystem>
 #include <iostream>
 
@@ -41,8 +42,9 @@ void sendfd(int sockfd, int fd_to_send, client_request::kind request_type) {
 	}
 }
 
-} // namespace ulab
+int sockfd = -1;
 
+} // namespace ulab
 
 int main(int argc, char *argv[]) {
 
@@ -55,8 +57,8 @@ int main(int argc, char *argv[]) {
 
 	char const* const socket_path = argv[1];
 
-	int sockfd = socket(AF_UNIX, SOCK_SEQPACKET, 0);
-	if (sockfd == -1) {
+	ulab::sockfd = socket(AF_UNIX, SOCK_SEQPACKET, 0);
+	if (ulab::sockfd == -1) {
 		std::cerr << "Error creating socket: " << strerror(errno) << std::endl;
 		return 1;
 	}
@@ -71,15 +73,15 @@ int main(int argc, char *argv[]) {
 		return 1;
 	}
 
-	int rc = connect(sockfd, (struct sockaddr *)&addr, sizeof(addr));
+	int rc = connect(ulab::sockfd, (struct sockaddr *)&addr, sizeof(addr));
 	if (rc != 0) {
 		std::cerr << "Error connecting to socket: " << strerror(errno) << std::endl;
 		return 1;
 	}
 
-	ulab::sendfd(sockfd, STDIN_FILENO, ulab::client_request::kind::stdin_fd);
-	ulab::sendfd(sockfd, STDOUT_FILENO, ulab::client_request::kind::stdout_fd);
-	ulab::sendfd(sockfd, STDERR_FILENO, ulab::client_request::kind::stderr_fd);
+	ulab::sendfd(ulab::sockfd, STDIN_FILENO, ulab::client_request::kind::stdin_fd);
+	ulab::sendfd(ulab::sockfd, STDOUT_FILENO, ulab::client_request::kind::stdout_fd);
+	ulab::sendfd(ulab::sockfd, STDERR_FILENO, ulab::client_request::kind::stderr_fd);
 
 	auto cwd = std::filesystem::current_path().string();
 	
@@ -89,7 +91,7 @@ int main(int argc, char *argv[]) {
 	request.type = ulab::client_request::kind::cwd;
 	request.total_len = sizeof(request) + cwd.size() + 1;
 	std::strncpy(request.payload[0].cwd, cwd.c_str(), sizeof(buf) - sizeof(request) - 1);
-	rc = send(sockfd, buf, request.total_len, 0);
+	rc = send(ulab::sockfd, buf, request.total_len, 0);
 	if (rc == -1) {
 		std::cerr << "Error sending cwd: " << strerror(errno) << std::endl;
 		return 1;
@@ -108,7 +110,7 @@ int main(int argc, char *argv[]) {
 	}
 	request.payload[0].args.argc = argc - 2;
 	request.total_len = sizeof(request) + offset + sizeof(request.payload[0].args.argc);
-	rc = send(sockfd, buf, request.total_len, 0);
+	rc = send(ulab::sockfd, buf, request.total_len, 0);
 
 	if (rc == -1) {
 		std::cerr << "Error sending arguments: " << strerror(errno) << std::endl;
@@ -131,10 +133,34 @@ int main(int argc, char *argv[]) {
 	request.payload[0].env.num_vars = num_vars;
 	request.total_len = sizeof(request) + offset + sizeof(request.payload[0].env.num_vars);
 
-	rc = send(sockfd, buf, request.total_len, 0);
+	rc = send(ulab::sockfd, buf, request.total_len, 0);
 	if (rc == -1) {
 		std::cerr << "Error sending environment variables: " << strerror(errno) << std::endl;
 		return 1;
+	}
+
+	// Install signal handlers, TODO race condition.
+	const auto sighandler = +[](int signum) {
+		char buf[4096];
+		// TODO rigorous about sizes, buffers-
+		ulab::client_request &request = *reinterpret_cast<ulab::client_request*>(buf);
+		size_t const len = sizeof(request) + sizeof(request.payload[0].signal);
+		request.type = ulab::client_request::kind::signal;
+		request.total_len = len;
+		request.payload[0].signal.signo = signum;
+		int rc = send(ulab::sockfd, &request, len, 0);
+		if (rc == -1) {
+			std::cerr << "Error sending signal notification: " << strerror(errno) << std::endl;
+		} else {
+			std::cout << "Sent signal notification for signal " << signum << std::endl;
+		}
+	};
+
+	for (int signum = 1; signum < NSIG; signum++) {
+		auto ptr = std::signal(signum, sighandler);
+		if (ptr == SIG_ERR) {
+			std::cerr << "Warning: failed to set signal handler for signal " << signum << ": " << strerror(errno) << std::endl;
+		}
 	}
 
 	msghdr msg{};
@@ -145,7 +171,7 @@ int main(int argc, char *argv[]) {
 	msg.msg_iov = &iov;	
 	msg.msg_control = nullptr;
 	msg.msg_controllen = 0;
-	rc = recvmsg(sockfd, &msg, 0);
+	rc = recvmsg(ulab::sockfd, &msg, 0);
 	if (rc < 0) {
 		std::cerr << "Error receiving notification: " << strerror(errno) << std::endl;
 		return 1;
