@@ -1,19 +1,9 @@
 #include "elf_loader.hpp"
 
+#include <iostream>
 #include <memory>
 
 namespace ulab {
-
-LoadedElf::~LoadedElf() {
-	if (map) {
-		munmap(map, map_len);
-		map = nullptr;
-	}
-	if (fd) {
-		close(fd);
-		fd = 0;
-	}
-}
 
 auto LoadedElf::load_from_path(std::string_view path) -> std::expected<LoadedElf, int> {
 	LoadedElf out{};
@@ -23,7 +13,9 @@ auto LoadedElf::load_from_path(std::string_view path) -> std::expected<LoadedElf
 	auto page_up   = [](size_t v) -> size_t { return (v + PAGE_SZ - 1) & ~size_t(PAGE_SZ - 1); };
 
 	out.fd = open(std::string{path}.c_str(), O_RDONLY | O_CLOEXEC);
-	if (out.fd < 0) {
+	if (int{out.fd} < 0) {
+		int badfd = int{out.fd};
+		std::cerr << "got badfd " << badfd << std::endl;
 		out.fd = 0;
 		return std::unexpected{-errno};
 	}
@@ -32,6 +24,7 @@ auto LoadedElf::load_from_path(std::string_view path) -> std::expected<LoadedElf
 	Elf64_Ehdr ehdr;
 	ssize_t n = pread(out.fd, &ehdr, sizeof(ehdr), 0);
 	if (n != (ssize_t)sizeof(ehdr)) {
+		std::cerr << "Fd: " << out.fd << std::endl;
 		return std::unexpected{n < 0 ? -errno : -ENOEXEC};
 	}
 
@@ -149,8 +142,7 @@ auto LoadedElf::load_from_path(std::string_view path) -> std::expected<LoadedElf
 
 	out.base = base;
 	out.entry = base + ehdr.e_entry;
-	out.map = map;
-	out.map_len = map_len;
+	out.map = std::span{static_cast<std::byte*>(map), map_len};
 
 	if (!out.phdr) {
 		// Fallback: phdr might be at e_phoff from base

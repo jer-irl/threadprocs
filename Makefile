@@ -15,7 +15,7 @@ LAUNCHER := $(BUILD_DIR)/launcher
 LIBTPROC := $(BUILD_DIR)/libtproc.a
 
 # --- Server -----------------------------------------------------------
-SERVER_SRCS := src/server/server.cpp src/server/elf_loader.cpp
+SERVER_SRCS := src/server/main.cpp src/server/elf_loader.cpp src/server/server.cpp
 SERVER_ASM  := src/server/trampoline_aarch64.S
 SERVER_OBJS := $(SERVER_SRCS:src/server/%.cpp=$(OBJ_DIR)/server/%.o) \
                $(SERVER_ASM:src/server/%.S=$(OBJ_DIR)/server/%.o)

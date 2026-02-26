@@ -1,5 +1,6 @@
 #pragma once
 
+#include "server/util.hpp"
 #include <elf.h>
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -31,24 +32,20 @@ public:
 		std::swap(phnum, other.phnum);
 		std::swap(phentsize, other.phentsize);
 		std::swap(map, other.map);
-		std::swap(map_len, other.map_len);
 		std::swap(interp, other.interp);
 		std::swap(fd, other.fd);
 		return *this;
 	}
-
-	~LoadedElf();
 
 	void* base{};        // base offset: real_addr = (char*)base + vaddr
 	void* entry{};       // computed entry point
 	void* phdr{};        // program headers in memory
 	uint16_t phnum{};
 	uint16_t phentsize{};
-	void* map{};         // mmap'd region start (for munmap)
-	size_t map_len{};    // mmap'd region length
+	RaiiMunmap map{std::span<std::byte>{}};
 	std::string interp; // PT_INTERP path (empty if none)
 	
-	int fd{};
+	RaiiClose fd{-1};
 };
 
 } // namespace ulab
