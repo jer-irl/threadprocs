@@ -1,29 +1,10 @@
 #pragma once
 
 #include "elf_loader.hpp"
-#include "tproc.h"
-#include "trampoline_fwd.hpp"
 #include "util.hpp"
 
 #include <liburing.h>
 #include <liburing/io_uring.h>
-
-#include <linux/sched.h>
-#include <sys/auxv.h>
-#include <sys/mman.h>
-#include <sys/random.h>
-#include <sys/socket.h>
-#include <sys/stat.h>
-#include <sys/syscall.h>
-#include <sys/types.h>
-#include <sys/un.h>
-
-#include <malloc.h>
-
-#include <cerrno>
-#include <csignal>
-#include <cstdlib>
-#include <cstring>
 
 #include <filesystem>
 #include <iostream>
@@ -36,8 +17,8 @@ namespace ulab {
 
 struct LauncherInfo;
 
-struct ring_request_info {
-	enum class kind {
+struct RingRequestInfo {
+	enum class Kind {
 		accept,
 		recvmsg,
 		waitid,
@@ -63,7 +44,7 @@ struct ring_request_info {
 };
 
 struct LauncherInfo {
-	enum class status {
+	enum class Status {
 		connected,
 		executing,
 		finished,
@@ -117,8 +98,8 @@ public:
 				throw std::runtime_error("Failed to wait for completion");
 			}
 
-			ring_request_info* request_info = (ring_request_info*)cqe->user_data;
-			using rk = ring_request_info::kind;
+			RingRequestInfo* request_info = (RingRequestInfo*)cqe->user_data;
+			using rk = RingRequestInfo::Kind;
 			switch (request_info->type) {
 			case rk::accept:
 				rc = on_accept_cmpl(*request_info, cqe->res);
@@ -144,17 +125,17 @@ private:
 	void spawn_client(LauncherInfo& client);
 
 	int request_accept();
-	int on_accept_cmpl(ring_request_info const& info, int rc);
+	int on_accept_cmpl(RingRequestInfo const& info, int rc);
 
 	int request_recvmsg(LauncherInfo& client);
-	int on_recvmsg_cmpl(ring_request_info& req_info, int rc);
+	int on_recvmsg_cmpl(RingRequestInfo& req_info, int rc);
 
 	int request_waitid(LauncherInfo& client);
-	int on_waitid_cmpl(ring_request_info& req_info, int rc);
+	int on_waitid_cmpl(RingRequestInfo& req_info, int rc);
 
 	int sockfd;
 	io_uring ring;
-	IntrusiveList<ring_request_info> pending_requests;
+	IntrusiveList<RingRequestInfo> pending_requests;
 	std::vector<std::unique_ptr<LauncherInfo>> clients;
 	void* registry_page{nullptr};
 };

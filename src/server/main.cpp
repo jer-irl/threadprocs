@@ -1,7 +1,10 @@
 #include "server.hpp"
 
+#include <sys/un.h>
+
 #include <malloc.h>
 
+#include <csignal>
 #include <filesystem>
 #include <iostream>
 

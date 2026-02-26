@@ -1,6 +1,7 @@
 #pragma once
 
-#include "server/util.hpp"
+#include "util.hpp"
+
 #include <elf.h>
 #include <fcntl.h>
 #include <sys/mman.h>

@@ -1,6 +1,19 @@
 #include "server.hpp"
 
 #include "protocol.hpp"
+#include "tproc.h"
+#include "trampoline_fwd.hpp"
+
+#include <linux/sched.h>
+
+#include <sys/auxv.h>
+#include <sys/mman.h>
+#include <sys/random.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/syscall.h>
+#include <sys/types.h>
+#include <sys/un.h>
 
 namespace ulab {
 
@@ -236,7 +249,7 @@ void Server::spawn_client(LauncherInfo& client) {
 	close(client.stderr_fd);
 	close(client.stdout_fd);
 	close(client.stdin_fd);
-	client.status = LauncherInfo::status::executing;
+	client.status = LauncherInfo::Status::executing;
 	std::cout << "Spawned client process with TID " << child_tid << std::endl;
 	request_waitid(client);
 }
@@ -244,13 +257,13 @@ void Server::spawn_client(LauncherInfo& client) {
 int Server::request_accept() {
 	io_uring_sqe *sqe = io_uring_get_sqe(&ring);
 	io_uring_prep_accept(sqe, sockfd, nullptr, nullptr, 0);
-	ring_request_info& accept_request_info = pending_requests.emplace_back();
-	accept_request_info.type = ring_request_info::kind::accept;
+	RingRequestInfo& accept_request_info = pending_requests.emplace_back();
+	accept_request_info.type = RingRequestInfo::Kind::accept;
 	io_uring_sqe_set_data(sqe, &accept_request_info);
 	return io_uring_submit(&ring);
 }
 
-int Server::on_accept_cmpl(ring_request_info const& info, int rc) {
+int Server::on_accept_cmpl(RingRequestInfo const& info, int rc) {
 	(void) info;
 	if (rc < 0) {
 		std::cerr << "Error accepting connection: " << strerror(-rc) << std::endl;
@@ -261,7 +274,7 @@ int Server::on_accept_cmpl(ring_request_info const& info, int rc) {
 	// TODO security: check peer credentials, permissions on socket, etc.
 
 	std::unique_ptr<LauncherInfo>& client = clients.emplace_back(std::make_unique<LauncherInfo>());
-	client->status = LauncherInfo::status::connected;
+	client->status = LauncherInfo::Status::connected;
 	client->conn_fd = rc;
 
 	// Listen for messages
@@ -275,8 +288,8 @@ int Server::on_accept_cmpl(ring_request_info const& info, int rc) {
 
 int Server::request_recvmsg(LauncherInfo& client) {
 	io_uring_sqe *sqe = io_uring_get_sqe(&ring);
-	ring_request_info& recvmsg_request_info = pending_requests.emplace_back();
-	recvmsg_request_info.type = ring_request_info::kind::recvmsg;
+	RingRequestInfo& recvmsg_request_info = pending_requests.emplace_back();
+	recvmsg_request_info.type = RingRequestInfo::Kind::recvmsg;
 	auto& recvmsg_info = recvmsg_request_info.info.recvmsg;
 	recvmsg_info.client = client;
 	recvmsg_info.msg.msg_iov = &recvmsg_info.iov;
@@ -292,18 +305,18 @@ int Server::request_recvmsg(LauncherInfo& client) {
 	return io_uring_submit(&ring);
 }
 
-int Server::on_recvmsg_cmpl(ring_request_info& req_info, int rc) {
+int Server::on_recvmsg_cmpl(RingRequestInfo& req_info, int rc) {
 	LauncherInfo& client = req_info.info.recvmsg.client;
 
 	if (rc < 0) {
 		if ((rc == -EBADF || rc == -ECONNRESET)) {
 			std::cerr << "Client disconnected" << std::endl;
-			if (client.status == LauncherInfo::status::finished) {
+			if (client.status == LauncherInfo::Status::finished) {
 				std::cerr << "Client process already finished, just cleaning up connection" << std::endl;
 			} else {
 				std::cerr << "Client process not finished, but connection was closed. Marking client as closed and cleaning up." << std::endl;
 			}
-			client.status = LauncherInfo::status::closed;
+			client.status = LauncherInfo::Status::closed;
 			close(client.conn_fd);
 			return 0;
 		}
@@ -313,10 +326,10 @@ int Server::on_recvmsg_cmpl(ring_request_info& req_info, int rc) {
 
 	if (rc == 0) {
 		// Peer closed the connection (orderly shutdown)
-		if (client.status != LauncherInfo::status::finished) {
+		if (client.status != LauncherInfo::Status::finished) {
 			std::cerr << "Client connection closed before process finished" << std::endl;
 		}
-		client.status = LauncherInfo::status::closed;
+		client.status = LauncherInfo::Status::closed;
 		return 0;
 	}
 
@@ -367,7 +380,7 @@ int Server::on_recvmsg_cmpl(ring_request_info& req_info, int rc) {
 		break;
 	case client_request::kind::signal: {
 		std::cout << "Received signal notification from client: signo " << request->payload[0].signal.signo << std::endl;
-		if (client.exec_info == std::nullopt || client.status != LauncherInfo::status::executing) {
+		if (client.exec_info == std::nullopt || client.status != LauncherInfo::Status::executing) {
 			std::cerr << "Warning: received signal notification but client process is not executing. Ignoring signal." << std::endl;
 			break;
 		}
@@ -384,7 +397,7 @@ int Server::on_recvmsg_cmpl(ring_request_info& req_info, int rc) {
 		return 1;
 	}
 
-	if (client.ready_to_exec() && client.status == LauncherInfo::status::connected) {
+	if (client.ready_to_exec() && client.status == LauncherInfo::Status::connected) {
 		std::cout << "Client is ready to execute program with args: ";
 		for (const auto& arg : client.args) {
 			std::cout << arg << " ";
@@ -400,8 +413,8 @@ int Server::on_recvmsg_cmpl(ring_request_info& req_info, int rc) {
 
 int Server::request_waitid(LauncherInfo& client) {
 	io_uring_sqe *sqe = io_uring_get_sqe(&ring);
-	ring_request_info& req_info = pending_requests.emplace_back();
-	req_info.type = ring_request_info::kind::waitid;
+	RingRequestInfo& req_info = pending_requests.emplace_back();
+	req_info.type = RingRequestInfo::Kind::waitid;
 	auto& wait_info = req_info.info.waitid;
 	wait_info.client = client;
 	io_uring_prep_waitid(sqe, P_PIDFD, client.exec_info->pidfd, &wait_info.siginfo, WEXITED, 0);
@@ -409,7 +422,7 @@ int Server::request_waitid(LauncherInfo& client) {
 	return io_uring_submit(&ring);
 }
 
-int Server::on_waitid_cmpl(ring_request_info& req_info, int rc) {
+int Server::on_waitid_cmpl(RingRequestInfo& req_info, int rc) {
 	if (rc != 0) {
 		std::cerr << "Error waiting for child process: " << strerror(-rc) << " child pid: " << req_info.info.waitid.client.get().exec_info->tid_in_parent << std::endl;
 		return 1;
@@ -422,7 +435,7 @@ int Server::on_waitid_cmpl(ring_request_info& req_info, int rc) {
 		std::cerr << "Warning: child did not exit normally, si_code: " << req_info.info.waitid.siginfo.si_code << std::endl;
 	}
 
-	client.status = LauncherInfo::status::finished;
+	client.status = LauncherInfo::Status::finished;
 
 	server_notification notification{server_notification::kind::child_exit, {client.exec_info->tid_in_parent, req_info.info.waitid.siginfo.si_status}};
 	int sent = send(client.conn_fd, &notification, sizeof(notification), 0); // notify client that process has finished
