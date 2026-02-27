@@ -9,7 +9,9 @@
 #include <iostream>
 
 namespace ulab {
+namespace {
 std::filesystem::path g_socket_path;
+} // namespace
 } // namespace ulab
 
 

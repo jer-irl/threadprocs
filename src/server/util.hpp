@@ -37,7 +37,9 @@ public:
 	}
 
 	operator T&(this auto&& self) { return self.resource; }
-	auto operator->(this auto&& self) -> T* { return &self.resource; }
+	auto operator->(this auto&& self) { return &self.resource; }
+	auto operator*(this auto&& self) { return self.resource; }
+	auto value(this auto&& self) { return self.resource; }
 
 private:
 	T resource{};

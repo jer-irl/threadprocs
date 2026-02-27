@@ -1,6 +1,7 @@
 #include "server.hpp"
 
 #include "protocol.hpp"
+#include "server/util.hpp"
 #include "tproc.h"
 #include "trampoline_fwd.hpp"
 
@@ -144,44 +145,41 @@ void Server::spawn_client(LauncherInfo& client) {
 	auto target_result = LoadedElf::load_from_path(client.args[0]);
 	if (!target_result) {
 		std::cerr << "Error loading target ELF '" << client.args[0] << "': " << strerror(-target_result.error()) << std::endl;
-		client.exec_info.reset();
 		return;
 	}
-	auto& ei = client.exec_info.emplace(std::move(target_result.value()));
-	std::cerr << "Loaded target: base=" << ei.target.base
-				<< " entry=" << ei.target.entry
-				<< " phdr=" << ei.target.phdr
-				<< " interp='" << ei.target.interp << "'" << std::endl;
+	auto& tr = target_result.value();
+	std::cerr << "Loaded target: base=" << tr.base
+				<< " entry=" << tr.entry
+				<< " phdr=" << tr.phdr
+				<< " interp='" << tr.interp << "'" << std::endl;
 
 	// --- Step 2: Load the interpreter (ld-linux.so) if the target has PT_INTERP ---
-	void* entry_point = ei.target.entry;
 
-	if (!ei.target.interp.empty()) {
-		auto interp = LoadedElf::load_from_path(ei.target.interp);
-		if (!interp) {
-			std::cerr << "Error loading interpreter '" << ei.target.interp << "': " << strerror(-interp.error()) << std::endl;
-			munmap(ei.target.map->data(), ei.target.map->size_bytes());
-			client.exec_info.reset();
+	std::optional<LoadedElf> interp{std::nullopt};
+	if (!tr.interp.empty()) {
+		auto exp_interp = LoadedElf::load_from_path(tr.interp);
+		if (!exp_interp) {
+			std::cerr << "Error loading interpreter '" << tr.interp << "': " << strerror(-exp_interp.error()) << std::endl;
 			return;
 		}
-		ei.interp = std::move(interp.value());
-		entry_point = ei.interp.value().entry;
-		std::cerr << "Loaded interpreter: base=" << ei.interp.value().base
-					<< " entry=" << ei.interp.value().entry << std::endl;
+		interp = std::move(exp_interp.value());
+		std::cerr << "Loaded interpreter: base=" << interp->base
+					<< " entry=" << interp->entry << std::endl;
 	}
 
+
 	// --- Step 3: Allocate process stack and build synthetic stack layout ---
-	ei.process_stack_size = 8 * 1024 * 1024; // 8 MiB
-	ei.process_stack = mmap(nullptr, ei.process_stack_size,
+	auto const pstack_size = 8 * 1024 * 1024; // 8 MiB
+	RaiiMunmap process_stack = std::span{static_cast<std::byte*>(mmap(nullptr, pstack_size,
 							PROT_READ | PROT_WRITE,
-							MAP_PRIVATE | MAP_ANONYMOUS | MAP_STACK, -1, 0);
-	if (ei.process_stack == MAP_FAILED) {
+							MAP_PRIVATE | MAP_ANONYMOUS | MAP_STACK, -1, 0)),
+							pstack_size};
+	if (process_stack->data() == MAP_FAILED) {
 		std::cerr << "Error allocating process stack: " << strerror(errno) << std::endl;
-		client.exec_info.reset();
 		return;
 	}
 
-	char* stack_top = static_cast<char*>(ei.process_stack) + ei.process_stack_size;
+	auto* stack_top = process_stack->data() + process_stack->size();
 
 	// Force glibc malloc to use mmap instead of brk for all allocations.
 	// With CLONE_VM, all threadprocs share a single mm_struct and therefore
@@ -190,23 +188,31 @@ void Server::spawn_client(LauncherInfo& client) {
 	// Setting the mmap threshold to 0 avoids brk entirely.
 	client.env.emplace_back("MALLOC_MMAP_THRESHOLD_=0");
 
+
 	void* synthetic_sp = build_synthetic_stack(
-		stack_top, client.args, client.env, ei.target, ei.interp.transform([](auto& interp) { return &interp; }).value_or(nullptr), registry_page);
+		reinterpret_cast<char*>(stack_top), client.args, client.env, tr, interp.transform([](auto& interp) { return &interp; }).value_or(nullptr), registry_page);
 
 	std::cerr << "Synthetic SP: " << synthetic_sp
-				<< " stack range: " << ei.process_stack << " - " << (void*)stack_top << std::endl;
+				<< " stack range: " << process_stack->data() << " - " << (void*)stack_top << std::endl;
 
 	// --- Step 4: Allocate a small stack for clone3 (child uses it briefly before switching) ---
-	ei.clone3_stack_size = 64 * 1024; // 64 KiB
-	ei.clone3_stack = mmap(nullptr, ei.clone3_stack_size,
+	auto const c3stack_size = 64 * 1024; // 64 KiB
+	RaiiMunmap clone3_stack = std::span{static_cast<std::byte*>(mmap(nullptr, c3stack_size,
 							PROT_READ | PROT_WRITE,
-							MAP_PRIVATE | MAP_ANONYMOUS | MAP_STACK, -1, 0);
-	if (ei.clone3_stack == MAP_FAILED) {
+							MAP_PRIVATE | MAP_ANONYMOUS | MAP_STACK, -1, 0)),
+							c3stack_size};
+	if (clone3_stack->data() == MAP_FAILED) {
 		std::cerr << "Error allocating clone3 stack: " << strerror(errno) << std::endl;
-		munmap(ei.process_stack, ei.process_stack_size);
-		client.exec_info.reset();
 		return;
 	}
+
+	auto& ei = client.exec_info.emplace(LauncherInfo::ExecInfo{
+		.clone3_stack = std::move(clone3_stack),
+		.process_stack = std::move(process_stack),
+		.target = std::move(tr),
+		.interp = std::move(interp),
+	});
+
 
 	// --- Step 5: Set up clone3 args ---
 	clone_args args{};
@@ -218,14 +224,15 @@ void Server::spawn_client(LauncherInfo& client) {
 	args.parent_tid = reinterpret_cast<uint64_t>(&ei.tid_in_parent);
 	args.pidfd = reinterpret_cast<uint64_t>(&ei.pidfd);
 	args.exit_signal = SIGCHLD;
-	args.stack = reinterpret_cast<uint64_t>(ei.clone3_stack);
-	args.stack_size = ei.clone3_stack_size;
+	args.stack = reinterpret_cast<uint64_t>(ei.clone3_stack->data());
+	args.stack_size = ei.clone3_stack->size();
 	args.set_tid = 0;
 	args.set_tid_size = 0;
 	args.cgroup = 0;
 	args.tls = 0;
 
 	// --- Step 6: Clone + trampoline ---
+	void* entry_point = ei.interp.has_value() ? ei.interp->entry : ei.target.entry;
 	std::string cwd_str = client.cwd.string();
 	long child_tid = child_clone3_and_exec(
 		&args, sizeof(args),
@@ -238,8 +245,6 @@ void Server::spawn_client(LauncherInfo& client) {
 
 	if (child_tid < 0) {
 		std::cerr << "Error in clone3: " << strerror((int)-child_tid) << std::endl;
-		munmap(ei.clone3_stack, ei.clone3_stack_size);
-		munmap(ei.process_stack, ei.process_stack_size);
 		client.exec_info.reset();
 		return;
 	}
@@ -317,7 +322,6 @@ int Server::on_recvmsg_cmpl(RingRequestInfo& req_info, int rc) {
 				std::cerr << "Client process not finished, but connection was closed. Marking client as closed and cleaning up." << std::endl;
 			}
 			client.status = LauncherInfo::Status::closed;
-			close(client.conn_fd);
 			return 0;
 		}
 		std::cerr << "Error receiving message: " << strerror(-rc) << std::endl;
@@ -417,7 +421,7 @@ int Server::request_waitid(LauncherInfo& client) {
 	req_info.type = RingRequestInfo::Kind::waitid;
 	auto& wait_info = req_info.info.waitid;
 	wait_info.client = client;
-	io_uring_prep_waitid(sqe, P_PIDFD, client.exec_info->pidfd, &wait_info.siginfo, WEXITED, 0);
+	io_uring_prep_waitid(sqe, P_PIDFD, client.exec_info->pidfd.value(), &wait_info.siginfo, WEXITED, 0);
 	io_uring_sqe_set_data(sqe, &req_info);
 	return io_uring_submit(&ring);
 }
@@ -446,13 +450,7 @@ int Server::on_waitid_cmpl(RingRequestInfo& req_info, int rc) {
 		std::cerr << "Error: sent " << sent << " bytes, expected to send " << sizeof(notification) << " bytes" << std::endl;
 	}
 
-	close(client.conn_fd);
-	close(client.exec_info->pidfd);
-
-	// Free mmap'd resources now that the child has exited
-	auto& ei = *client.exec_info;
-	munmap(ei.clone3_stack, ei.clone3_stack_size);
-	munmap(ei.process_stack, ei.process_stack_size);
+	// Free resources now that the child has exited
 	client.exec_info.reset();
 
 	std::cout << "Notified client of process exit" << std::endl;

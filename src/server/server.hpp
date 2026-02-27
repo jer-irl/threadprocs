@@ -51,7 +51,7 @@ struct LauncherInfo {
 		closed,
 	} status;
 
-	int conn_fd{-1};
+	RaiiClose conn_fd{-1};
 	int stdin_fd{-1};
 	int stdout_fd{-1};
 	int stderr_fd{-1};
@@ -59,24 +59,27 @@ struct LauncherInfo {
 	std::vector<std::string> env;
 	std::vector<std::string> args;
 
-	struct ExecInfo {
-		explicit ExecInfo(LoadedElf target) : target{std::move(target)} {}
+	class ExecInfo {
+	public:
+		pid_t tid_in_child{-1}; // also futex
+		pid_t tid_in_parent{-1};
+		RaiiClose pidfd{-1};
+		RaiiMunmap clone3_stack;    // small stack for clone3 child to trampoline on
 
-		pid_t tid_in_child; // also futex
-		pid_t tid_in_parent;
-		int pidfd;
-		void* clone3_stack;       // small stack for clone3 child to trampoline on
-		std::size_t clone3_stack_size;
-		void* process_stack;      // main stack for the loaded program
-		std::size_t process_stack_size;
+		// void* clone3_stack;       // small stack for clone3 child to trampoline on
+		// std::size_t clone3_stack_size;
+		RaiiMunmap process_stack;    // main stack for the loaded program
+
+		// void* process_stack;      // main stack for the loaded program
+		// std::size_t process_stack_size;
 		LoadedElf target;
 		std::optional<LoadedElf> interp;        // only valid if target has PT_INTERP
 	};
 
-	std::optional<ExecInfo> exec_info;
+	std::optional<ExecInfo> exec_info{std::nullopt};
 
 	bool ready_to_exec() const {
-		return conn_fd != -1 && stdout_fd != -1 && stderr_fd != -1 && stdin_fd != -1 && !args.empty() && !env.empty() && !cwd.empty();
+		return *conn_fd != -1 && stdout_fd != -1 && stderr_fd != -1 && stdin_fd != -1 && !args.empty() && !env.empty() && !cwd.empty();
 	}
 };
 
