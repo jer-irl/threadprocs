@@ -8,8 +8,8 @@
 
 namespace ulab {
 
-struct client_request {
-	enum class kind {
+struct ClientRequest {
+	enum class Kind {
 		stdin_fd,
 		stdout_fd,
 		stderr_fd,
@@ -18,7 +18,7 @@ struct client_request {
 		args,
 		signal,
 	};
-	kind type;
+	Kind type;
 	std::uint64_t total_len;
 	union {
 		char cwd[0];
@@ -36,14 +36,14 @@ struct client_request {
 	} payload[];
 
 	std::vector<std::string> get_env() const {
-		if (type != kind::env) {
+		if (type != Kind::env) {
 			throw std::runtime_error("Invalid request type for get_env");
 		}
 		std::vector<std::string> result;
 		size_t offset = 0;
 		char const* const base = payload[0].env.vars;
 		for (size_t i = 0; i < payload->env.num_vars; i++) {
-			if (offset >= total_len - offsetof(client_request, payload[0].env.vars)) {
+			if (offset >= total_len - offsetof(ClientRequest, payload[0].env.vars)) {
 				throw std::runtime_error("Malformed env payload: offset exceeds total length");
 			}
 			const char* var = base + offset;
@@ -54,13 +54,13 @@ struct client_request {
 	}
 
 	std::vector<std::string> get_args() const {
-		if (type != kind::args) {
+		if (type != Kind::args) {
 			throw std::runtime_error("Invalid request type for get_args");
 		}
 		std::vector<std::string> result;
 		size_t offset = 0;
 		for (size_t i = 0; i < payload->args.argc; i++) {
-			if (offset >= total_len - offsetof(client_request, payload[0].args.argz)) {
+			if (offset >= total_len - offsetof(ClientRequest, payload[0].args.argz)) {
 				throw std::runtime_error("Malformed args payload: offset exceeds total length");
 			}
 			const char* arg = payload->args.argz + offset;
@@ -71,11 +71,11 @@ struct client_request {
 	}
 };
 
-struct server_notification {
-	enum class kind {
+struct ServerNotification {
+	enum class Kind {
 		child_exit,
 	};
-	kind type;
+	Kind type;
 	union {
 		struct {
 			pid_t tid;

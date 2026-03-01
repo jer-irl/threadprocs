@@ -12,10 +12,10 @@
 
 namespace ulab {
 
-void sendfd(int sockfd, int fd_to_send, client_request::kind request_type) {
+void sendfd(int sockfd, int fd_to_send, ClientRequest::Kind request_type) {
 	struct msghdr msg{};
 	struct iovec iov;
-	client_request request{request_type, sizeof(client_request)};
+	ClientRequest request{request_type, sizeof(ClientRequest)};
 	iov.iov_base = &request;
 	iov.iov_len = sizeof(request);
 	msg.msg_iov = &iov;
@@ -79,16 +79,16 @@ int main(int argc, char *argv[]) {
 		return 1;
 	}
 
-	ulab::sendfd(ulab::sockfd, STDIN_FILENO, ulab::client_request::kind::stdin_fd);
-	ulab::sendfd(ulab::sockfd, STDOUT_FILENO, ulab::client_request::kind::stdout_fd);
-	ulab::sendfd(ulab::sockfd, STDERR_FILENO, ulab::client_request::kind::stderr_fd);
+	ulab::sendfd(ulab::sockfd, STDIN_FILENO, ulab::ClientRequest::Kind::stdin_fd);
+	ulab::sendfd(ulab::sockfd, STDOUT_FILENO, ulab::ClientRequest::Kind::stdout_fd);
+	ulab::sendfd(ulab::sockfd, STDERR_FILENO, ulab::ClientRequest::Kind::stderr_fd);
 
 	auto cwd = std::filesystem::current_path().string();
 	
 	char buf[4096];
 	// TODO be rigorous about sizes, buffers
-	ulab::client_request& request = *reinterpret_cast<ulab::client_request*>(buf);
-	request.type = ulab::client_request::kind::cwd;
+	ulab::ClientRequest& request = *reinterpret_cast<ulab::ClientRequest*>(buf);
+	request.type = ulab::ClientRequest::Kind::cwd;
 	request.total_len = sizeof(request) + cwd.size() + 1;
 	std::strncpy(request.payload[0].cwd, cwd.c_str(), sizeof(buf) - sizeof(request) - 1);
 	rc = send(ulab::sockfd, buf, request.total_len, 0);
@@ -97,7 +97,7 @@ int main(int argc, char *argv[]) {
 		return 1;
 	}
 
-	request.type = ulab::client_request::kind::args;
+	request.type = ulab::ClientRequest::Kind::args;
 	size_t offset = 0;
 	for (int i = 2; i < argc; i++) {
 		size_t arg_len = std::strlen(argv[i]) + 1;
@@ -105,7 +105,7 @@ int main(int argc, char *argv[]) {
 			std::cerr << "Error: total length of arguments exceeds buffer size" << std::endl;
 			return 1;
 		}
-		std::strncpy(&buf[offsetof(ulab::client_request, payload[0].args.argz[0]) + offset], argv[i], arg_len);
+		std::strncpy(&buf[offsetof(ulab::ClientRequest, payload[0].args.argz[0]) + offset], argv[i], arg_len);
 		offset += arg_len;
 	}
 	request.payload[0].args.argc = argc - 2;
@@ -117,7 +117,7 @@ int main(int argc, char *argv[]) {
 		return 1;
 	}
 
-	request.type = ulab::client_request::kind::env;
+	request.type = ulab::ClientRequest::Kind::env;
 	offset = 0;
 	int num_vars = 0;
 	for (char** env = environ; *env != nullptr; env++) {
@@ -126,7 +126,7 @@ int main(int argc, char *argv[]) {
 			std::cerr << "Error: total length of environment variables exceeds buffer size" << std::endl;
 			return 1;
 		}
-		std::strncpy(&buf[offsetof(ulab::client_request, payload[0].env.vars[0]) + offset], *env, var_len);
+		std::strncpy(&buf[offsetof(ulab::ClientRequest, payload[0].env.vars[0]) + offset], *env, var_len);
 		offset += var_len;
 		num_vars++;
 	}
@@ -143,9 +143,9 @@ int main(int argc, char *argv[]) {
 	const auto sighandler = +[](int signum) {
 		char buf[4096];
 		// TODO rigorous about sizes, buffers-
-		ulab::client_request &request = *reinterpret_cast<ulab::client_request*>(buf);
+		ulab::ClientRequest &request = *reinterpret_cast<ulab::ClientRequest*>(buf);
 		size_t const len = sizeof(request) + sizeof(request.payload[0].signal);
-		request.type = ulab::client_request::kind::signal;
+		request.type = ulab::ClientRequest::Kind::signal;
 		request.total_len = len;
 		request.payload[0].signal.signo = signum;
 		int rc = send(ulab::sockfd, &request, len, 0);
@@ -181,10 +181,10 @@ int main(int argc, char *argv[]) {
 		return 1;
 	}
 
-	ulab::server_notification& notification = *reinterpret_cast<ulab::server_notification*>(buf);
+	ulab::ServerNotification& notification = *reinterpret_cast<ulab::ServerNotification*>(buf);
 	std::cout << "Received notification from server" << std::endl;
 	switch (notification.type) {
-		case ulab::server_notification::kind::child_exit:
+		case ulab::ServerNotification::Kind::child_exit:
 			std::cout << "Child process with TID " << notification.child_exit.tid << " exited with status " << notification.child_exit.exit_status << std::endl;
 			break;
 	}

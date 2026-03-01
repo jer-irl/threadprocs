@@ -346,7 +346,7 @@ int Server::on_recvmsg_cmpl(RingRequestInfo& req_info, int rc) {
 		return 1;
 	}
 
-	if (rc < (int)sizeof(client_request)) {
+	if (rc < (int)sizeof(ClientRequest)) {
 		std::cerr << "Error: message too short to contain client_request" << std::endl;
 		return 1;
 	}
@@ -356,33 +356,33 @@ int Server::on_recvmsg_cmpl(RingRequestInfo& req_info, int rc) {
 		return 1;
 	}
 
-	if (reinterpret_cast<std::uintptr_t>(msg.msg_iov[0].iov_base) % alignof(client_request) != 0) {
+	if (reinterpret_cast<std::uintptr_t>(msg.msg_iov[0].iov_base) % alignof(ClientRequest) != 0) {
 		std::cerr << "Error: message iovec base is not properly aligned for client_request" << std::endl;
 		return 1;
 	}
 
-	client_request* request = reinterpret_cast<client_request*>(msg.msg_iov[0].iov_base);
+	ClientRequest* request = reinterpret_cast<ClientRequest*>(msg.msg_iov[0].iov_base);
 
 	switch (request->type) {
-	case client_request::kind::stdin_fd:
+	case ClientRequest::Kind::stdin_fd:
 		client.stdin_fd = get_fd_from_cmsg(req_info.info.recvmsg.msg);
 		break;
-	case client_request::kind::stdout_fd:
+	case ClientRequest::Kind::stdout_fd:
 		client.stdout_fd = get_fd_from_cmsg(req_info.info.recvmsg.msg);
 		break;
-	case client_request::kind::stderr_fd:
+	case ClientRequest::Kind::stderr_fd:
 		client.stderr_fd = get_fd_from_cmsg(req_info.info.recvmsg.msg);
 		break;
-	case client_request::kind::cwd:
+	case ClientRequest::Kind::cwd:
 		client.cwd = std::filesystem::path{request->payload[0].cwd};
 		break;
-	case client_request::kind::env:
+	case ClientRequest::Kind::env:
 		client.env = request->get_env();
 		break;
-	case client_request::kind::args:
+	case ClientRequest::Kind::args:
 		client.args = request->get_args();
 		break;
-	case client_request::kind::signal: {
+	case ClientRequest::Kind::signal: {
 		std::cout << "Received signal notification from client: signo " << request->payload[0].signal.signo << std::endl;
 		if (client.exec_info == std::nullopt || client.status != LauncherInfo::Status::executing) {
 			std::cerr << "Warning: received signal notification but client process is not executing. Ignoring signal." << std::endl;
@@ -441,7 +441,7 @@ int Server::on_waitid_cmpl(RingRequestInfo& req_info, int rc) {
 
 	client.status = LauncherInfo::Status::finished;
 
-	server_notification notification{server_notification::kind::child_exit, {client.exec_info->tid_in_parent, req_info.info.waitid.siginfo.si_status}};
+	ServerNotification notification{ServerNotification::Kind::child_exit, {client.exec_info->tid_in_parent, req_info.info.waitid.siginfo.si_status}};
 	int sent = send(client.conn_fd, &notification, sizeof(notification), 0); // notify client that process has finished
 	if (sent == -1) {
 		std::cerr << "Error sending notification to client: " << strerror(errno) << std::endl;
