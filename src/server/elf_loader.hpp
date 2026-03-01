@@ -7,7 +7,6 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
-#include <cerrno>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>

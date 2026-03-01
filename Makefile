@@ -7,6 +7,8 @@ CXXFLAGS      := -Og -g -Werror -Wall -Wextra -std=gnu++23
 LIBTPROC_CFLAGS := -Og -g -fPIC -Werror -Wall -Wextra
 DEPFLAGS       = -MMD -MP -MF $(@:.o=.d)
 
+SPDLOG_INCLUDE := spdlog/include
+
 BUILD_DIR := buildout
 OBJ_DIR   := $(BUILD_DIR)/obj
 
@@ -60,7 +62,7 @@ $(LIBTPROC): $(LIBTPROC_OBJS) | $(BUILD_DIR)
 # --- Compile rules (server) --------------------------------------------
 
 $(OBJ_DIR)/server/%.o: src/server/%.cpp | $(OBJ_DIR)/server
-	$(CXX) $(CXXFLAGS) $(DEPFLAGS) -I src -I libtproc -c -o $@ $<
+	$(CXX) $(CXXFLAGS) $(DEPFLAGS) -I src -I libtproc -I $(SPDLOG_INCLUDE) -c -o $@ $<
 
 $(OBJ_DIR)/server/%.o: src/server/%.S | $(OBJ_DIR)/server
 	$(CXX) $(DEPFLAGS) -c -o $@ $<

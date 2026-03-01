@@ -4,3 +4,4 @@
 -std=gnu++23
 -Isrc
 -Ilibtproc
+-Ispdlog/include

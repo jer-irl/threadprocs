@@ -74,7 +74,7 @@ int main(int argc, char *argv[]) {
 		std::filesystem::remove(ulab::g_socket_path);
 	};
 	constexpr auto cleanup_sig = +[](int signum) {
-		std::cerr << "Received signal " << signum << ", cleaning up and exiting" << std::endl;
+		std::cout << "Received signal " << signum << ", cleaning up and exiting" << std::endl;
 		cleanup();
 		std::exit(0);
 	};

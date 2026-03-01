@@ -128,8 +128,7 @@ void* build_synthetic_stack(
 Server::Server(int sockfd) : sockfd{sockfd}, ring{} {
 	int rc = io_uring_queue_init(16, &ring, 0);
 	if (rc != 0) {
-		std::cerr << "Error initializing io_uring: " << strerror(-rc) << std::endl;
-		throw std::runtime_error("Failed to initialize io_uring");
+		throw std::runtime_error(std::format("Failed to initialize io_uring: {}", strerror(-rc)));
 	}
 	registry_page = mmap(nullptr, 4096, PROT_READ | PROT_WRITE,
 							MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
@@ -137,7 +136,6 @@ Server::Server(int sockfd) : sockfd{sockfd}, ring{} {
 		io_uring_queue_exit(&ring);
 		throw std::runtime_error("Failed to allocate registry page");
 	}
-	std::cerr << "Registry page at " << registry_page << std::endl;
 }
 
 void Server::spawn_client(LauncherInfo& client) {
