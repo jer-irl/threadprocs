@@ -1,5 +1,7 @@
 #include "elf_loader.hpp"
 
+#include <spdlog/spdlog.h>
+
 #include <iostream>
 #include <memory>
 
@@ -15,7 +17,7 @@ auto LoadedElf::load_from_path(std::string_view path) -> std::expected<LoadedElf
 	out.fd = open(std::string{path}.c_str(), O_RDONLY | O_CLOEXEC);
 	if (int{out.fd} < 0) {
 		int badfd = int{out.fd};
-		std::cerr << "got badfd " << badfd << std::endl;
+		spdlog::error("got badfd {}", badfd);
 		out.fd = 0;
 		return std::unexpected{-errno};
 	}
@@ -24,7 +26,7 @@ auto LoadedElf::load_from_path(std::string_view path) -> std::expected<LoadedElf
 	Elf64_Ehdr ehdr;
 	ssize_t n = pread(out.fd, &ehdr, sizeof(ehdr), 0);
 	if (n != (ssize_t)sizeof(ehdr)) {
-		std::cerr << "Fd: " << out.fd << std::endl;
+		spdlog::error("Fd: {}", *out.fd);
 		return std::unexpected{n < 0 ? -errno : -ENOEXEC};
 	}
 

@@ -5,6 +5,8 @@
 #include "tproc.h"
 #include "trampoline_fwd.hpp"
 
+#include <spdlog/spdlog.h>
+
 #include <linux/sched.h>
 
 #include <sys/auxv.h>
@@ -15,6 +17,8 @@
 #include <sys/syscall.h>
 #include <sys/types.h>
 #include <sys/un.h>
+
+#include <format>
 
 namespace ulab {
 
@@ -142,14 +146,12 @@ void Server::spawn_client(LauncherInfo& client) {
 	// --- Step 1: Load the target ELF binary ---
 	auto target_result = LoadedElf::load_from_path(client.args[0]);
 	if (!target_result) {
-		std::cerr << "Error loading target ELF '" << client.args[0] << "': " << strerror(-target_result.error()) << std::endl;
+		spdlog::error("Error loading target ELF '{}': {}", client.args[0], strerror(-target_result.error()));
 		return;
 	}
 	auto& tr = target_result.value();
-	std::cerr << "Loaded target: base=" << tr.base
-				<< " entry=" << tr.entry
-				<< " phdr=" << tr.phdr
-				<< " interp='" << tr.interp << "'" << std::endl;
+	spdlog::debug("Loaded target: base={} entry={} phdr={} interp='{}'",
+		tr.base, tr.entry, tr.phdr, tr.interp);
 
 	// --- Step 2: Load the interpreter (ld-linux.so) if the target has PT_INTERP ---
 
@@ -157,12 +159,11 @@ void Server::spawn_client(LauncherInfo& client) {
 	if (!tr.interp.empty()) {
 		auto exp_interp = LoadedElf::load_from_path(tr.interp);
 		if (!exp_interp) {
-			std::cerr << "Error loading interpreter '" << tr.interp << "': " << strerror(-exp_interp.error()) << std::endl;
+			spdlog::error("Error loading interpreter '{}': {}", tr.interp, strerror(-exp_interp.error()));
 			return;
 		}
 		interp = std::move(exp_interp.value());
-		std::cerr << "Loaded interpreter: base=" << interp->base
-					<< " entry=" << interp->entry << std::endl;
+		spdlog::debug("Loaded interpreter: base={} entry={}", interp->base, interp->entry);
 	}
 
 
@@ -173,7 +174,7 @@ void Server::spawn_client(LauncherInfo& client) {
 							MAP_PRIVATE | MAP_ANONYMOUS | MAP_STACK, -1, 0)),
 							pstack_size};
 	if (process_stack->data() == MAP_FAILED) {
-		std::cerr << "Error allocating process stack: " << strerror(errno) << std::endl;
+		spdlog::error("Error allocating process stack: {}", strerror(errno));
 		return;
 	}
 
@@ -190,8 +191,7 @@ void Server::spawn_client(LauncherInfo& client) {
 	void* synthetic_sp = build_synthetic_stack(
 		reinterpret_cast<char*>(stack_top), client.args, client.env, tr, interp.transform([](auto& interp) { return &interp; }).value_or(nullptr), registry_page);
 
-	std::cerr << "Synthetic SP: " << synthetic_sp
-				<< " stack range: " << process_stack->data() << " - " << (void*)stack_top << std::endl;
+	spdlog::debug("Synthetic SP: {} stack range: {} - {}", synthetic_sp, static_cast<void*>(process_stack->data()), static_cast<void*>(stack_top));
 
 	// --- Step 4: Allocate a small stack for clone3 (child uses it briefly before switching) ---
 	auto const c3stack_size = 64 * 1024; // 64 KiB
@@ -200,7 +200,7 @@ void Server::spawn_client(LauncherInfo& client) {
 							MAP_PRIVATE | MAP_ANONYMOUS | MAP_STACK, -1, 0)),
 							c3stack_size};
 	if (clone3_stack->data() == MAP_FAILED) {
-		std::cerr << "Error allocating clone3 stack: " << strerror(errno) << std::endl;
+		spdlog::error("Error allocating clone3 stack: {}", strerror(errno));
 		return;
 	}
 
@@ -242,7 +242,7 @@ void Server::spawn_client(LauncherInfo& client) {
 		cwd_str.c_str());
 
 	if (child_tid < 0) {
-		std::cerr << "Error in clone3: " << strerror((int)-child_tid) << std::endl;
+		spdlog::error("Error in clone3: {}", strerror((int)-child_tid));
 		client.exec_info.reset();
 		return;
 	}
@@ -253,7 +253,7 @@ void Server::spawn_client(LauncherInfo& client) {
 	close(client.stdout_fd);
 	close(client.stdin_fd);
 	client.status = LauncherInfo::Status::executing;
-	std::cout << "Spawned client process with TID " << child_tid << std::endl;
+	spdlog::info("Spawned client process with TID {}", child_tid);
 	request_waitid(client);
 }
 
@@ -269,10 +269,10 @@ int Server::request_accept() {
 int Server::on_accept_cmpl(RingRequestInfo const& info, int rc) {
 	(void) info;
 	if (rc < 0) {
-		std::cerr << "Error accepting connection: " << strerror(-rc) << std::endl;
+		spdlog::error("Error accepting connection: {}", strerror(-rc));
 		return 1;
 	}
-	std::cout << "Accepted connection" << std::endl;
+	spdlog::info("Accepted connection");
 
 	// TODO security: check peer credentials, permissions on socket, etc.
 
@@ -313,49 +313,49 @@ int Server::on_recvmsg_cmpl(RingRequestInfo& req_info, int rc) {
 
 	if (rc < 0) {
 		if ((rc == -EBADF || rc == -ECONNRESET)) {
-			std::cerr << "Client disconnected" << std::endl;
+			spdlog::info("Client disconnected");
 			if (client.status == LauncherInfo::Status::finished) {
-				std::cerr << "Client process already finished, just cleaning up connection" << std::endl;
+				spdlog::info("Client process already finished, just cleaning up connection");
 			} else {
-				std::cerr << "Client process not finished, but connection was closed. Marking client as closed and cleaning up." << std::endl;
+				spdlog::info("Client process not finished, but connection was closed. Marking client as closed and cleaning up.");
 			}
 			client.status = LauncherInfo::Status::closed;
 			return 0;
 		}
-		std::cerr << "Error receiving message: " << strerror(-rc) << std::endl;
+		spdlog::error("Error receiving message: {}", strerror(-rc));
 		return 1;
 	}
 
 	if (rc == 0) {
 		// Peer closed the connection (orderly shutdown)
 		if (client.status != LauncherInfo::Status::finished) {
-			std::cerr << "Client connection closed before process finished" << std::endl;
+			spdlog::warn("Client connection closed before process finished");
 		}
 		client.status = LauncherInfo::Status::closed;
 		return 0;
 	}
 
-	std::cout << "Received message" << std::endl;
+	spdlog::info("Received message");
 
 	msghdr& msg = req_info.info.recvmsg.msg;
 
 	if (msg.msg_iovlen != 1) {
-		std::cerr << "Error: expected exactly 1 iovec in message" << std::endl;
+		spdlog::error("Error: expected exactly 1 iovec in message");
 		return 1;
 	}
 
 	if (rc < (int)sizeof(ClientRequest)) {
-		std::cerr << "Error: message too short to contain client_request" << std::endl;
+		spdlog::error("Error: message too short to contain client_request");
 		return 1;
 	}
 
 	if (msg.msg_iov[0].iov_base == nullptr) {
-		std::cerr << "Error: message iovec base is null" << std::endl;
+		spdlog::error("Error: message iovec base is null");
 		return 1;
 	}
 
 	if (reinterpret_cast<std::uintptr_t>(msg.msg_iov[0].iov_base) % alignof(ClientRequest) != 0) {
-		std::cerr << "Error: message iovec base is not properly aligned for client_request" << std::endl;
+		spdlog::error("Error: message iovec base is not properly aligned for client_request");
 		return 1;
 	}
 
@@ -381,30 +381,30 @@ int Server::on_recvmsg_cmpl(RingRequestInfo& req_info, int rc) {
 		client.args = request->get_args();
 		break;
 	case ClientRequest::Kind::signal: {
-		std::cout << "Received signal notification from client: signo " << request->payload[0].signal.signo << std::endl;
+		spdlog::info("Received signal notification from client: signo {}", request->payload[0].signal.signo);
 		if (client.exec_info == std::nullopt || client.status != LauncherInfo::Status::executing) {
-			std::cerr << "Warning: received signal notification but client process is not executing. Ignoring signal." << std::endl;
+			spdlog::warn("Warning: received signal notification but client process is not executing. Ignoring signal.");
 			break;
 		}
 		int rc = kill(client.exec_info->tid_in_parent, request->payload[0].signal.signo);
 		if (rc == -1) {
-			std::cerr << "Error forwarding signal to child process: " << strerror(errno) << std::endl;
+			spdlog::error("Error forwarding signal to child process: {}", strerror(errno));
 		} else {
-			std::cout << "Forwarded signal " << request->payload[0].signal.signo << " to child process with TID " << client.exec_info->tid_in_parent << std::endl;
+			spdlog::info("Forwarded signal {} to child process with TID {}", request->payload[0].signal.signo, client.exec_info->tid_in_parent);
 		}
 		break;
 	}
 	default:
-		std::cerr << "Error: unknown client request type" << std::endl;
+		spdlog::error("Error: unknown client request type");
 		return 1;
 	}
 
 	if (client.ready_to_exec() && client.status == LauncherInfo::Status::connected) {
-		std::cout << "Client is ready to execute program with args: ";
-		for (const auto& arg : client.args) {
-			std::cout << arg << " ";
+		std::string joined{client.args.empty() ? "" : client.args[0]};
+		for (size_t i = 1; i < client.args.size(); i++) {
+			joined += " " + client.args[i];
 		}
-		std::cout << std::endl;
+		spdlog::info("Client is ready to execute program with args: {}", joined);
 		spawn_client(client);
 	}
 
@@ -426,15 +426,15 @@ int Server::request_waitid(LauncherInfo& client) {
 
 int Server::on_waitid_cmpl(RingRequestInfo& req_info, int rc) {
 	if (rc != 0) {
-		std::cerr << "Error waiting for child process: " << strerror(-rc) << " child pid: " << req_info.info.waitid.client.get().exec_info->tid_in_parent << std::endl;
+		spdlog::error("Error waiting for child process: {} child pid: {}", strerror(-rc), req_info.info.waitid.client.get().exec_info->tid_in_parent);
 		return 1;
 	}
 
 	LauncherInfo& client = req_info.info.waitid.client;
-	std::cout << "Client process with TID " << client.exec_info->tid_in_parent << " exited with status " << req_info.info.waitid.siginfo.si_status << " and code " << req_info.info.waitid.siginfo.si_code << std::endl;
+	spdlog::info("Client process with TID {} exited with status {} and code {}", client.exec_info->tid_in_parent, req_info.info.waitid.siginfo.si_status, req_info.info.waitid.siginfo.si_code);
 
 	if (req_info.info.waitid.siginfo.si_code != CLD_EXITED) {
-		std::cerr << "Warning: child did not exit normally, si_code: " << req_info.info.waitid.siginfo.si_code << std::endl;
+		spdlog::warn("Warning: child did not exit normally, si_code: {}", req_info.info.waitid.siginfo.si_code);
 	}
 
 	client.status = LauncherInfo::Status::finished;
@@ -442,16 +442,16 @@ int Server::on_waitid_cmpl(RingRequestInfo& req_info, int rc) {
 	ServerNotification notification{ServerNotification::Kind::child_exit, {client.exec_info->tid_in_parent, req_info.info.waitid.siginfo.si_status}};
 	int sent = send(client.conn_fd, &notification, sizeof(notification), 0); // notify client that process has finished
 	if (sent == -1) {
-		std::cerr << "Error sending notification to client: " << strerror(errno) << std::endl;
+		spdlog::error("Error sending notification to client: {}", strerror(errno));
 	}
 	if (sent != sizeof(notification)) {
-		std::cerr << "Error: sent " << sent << " bytes, expected to send " << sizeof(notification) << " bytes" << std::endl;
+		spdlog::error("Error: sent {} bytes, expected to send {} bytes", sent, sizeof(notification));
 	}
 
 	// Free resources now that the child has exited
 	client.exec_info.reset();
 
-	std::cout << "Notified client of process exit" << std::endl;
+	spdlog::info("Notified client of process exit");
 
 	return 0;
 }

@@ -6,11 +6,12 @@
 #include <liburing.h>
 #include <liburing/io_uring.h>
 
+#include <spdlog/spdlog.h>
+
 #include <filesystem>
 #include <iostream>
 #include <memory>
 #include <optional>
-#include <utility>
 #include <vector>
 
 namespace ulab {
@@ -65,13 +66,7 @@ struct LauncherInfo {
 		pid_t tid_in_parent{-1};
 		RaiiClose pidfd{-1};
 		RaiiMunmap clone3_stack;    // small stack for clone3 child to trampoline on
-
-		// void* clone3_stack;       // small stack for clone3 child to trampoline on
-		// std::size_t clone3_stack_size;
 		RaiiMunmap process_stack;    // main stack for the loaded program
-
-		// void* process_stack;      // main stack for the loaded program
-		// std::size_t process_stack_size;
 		LoadedElf target;
 		std::optional<LoadedElf> interp;        // only valid if target has PT_INTERP
 	};
@@ -97,7 +92,7 @@ public:
 				if (rc == -EINTR) {
 					continue; // retry if interrupted by signal
 				}
-				std::cerr << "Error waiting for completion: " << strerror(-rc) << std::endl;
+				spdlog::error("Error waiting for completion: {}", strerror(-rc));
 				throw std::runtime_error("Failed to wait for completion");
 			}
 
@@ -118,7 +113,7 @@ public:
 			io_uring_cqe_seen(&ring, cqe);
 
 			if (rc != 0) {
-				std::cerr << "Error handling completion: " << strerror(-rc) << std::endl;
+				spdlog::error("Error handling completion: {}", strerror(-rc));
 				throw std::runtime_error("Failed to handle completion");
 			}
 		}

@@ -8,9 +8,12 @@ LIBTPROC_CFLAGS := -Og -g -fPIC -Werror -Wall -Wextra
 DEPFLAGS       = -MMD -MP -MF $(@:.o=.d)
 
 SPDLOG_INCLUDE := spdlog/include
+SPDLOG_FLAGS   := -I $(SPDLOG_INCLUDE) -Wno-dangling-reference
 
 BUILD_DIR := buildout
 OBJ_DIR   := $(BUILD_DIR)/obj
+
+SERVER_PCH := $(OBJ_DIR)/server/pch.h.gch
 
 SERVER   := $(BUILD_DIR)/server
 LAUNCHER := $(BUILD_DIR)/launcher
@@ -61,8 +64,11 @@ $(LIBTPROC): $(LIBTPROC_OBJS) | $(BUILD_DIR)
 
 # --- Compile rules (server) --------------------------------------------
 
-$(OBJ_DIR)/server/%.o: src/server/%.cpp | $(OBJ_DIR)/server
-	$(CXX) $(CXXFLAGS) $(DEPFLAGS) -I src -I libtproc -I $(SPDLOG_INCLUDE) -c -o $@ $<
+$(SERVER_PCH): src/server/pch.h | $(OBJ_DIR)/server
+	$(CXX) $(CXXFLAGS) -I src -I libtproc $(SPDLOG_FLAGS) -x c++-header -o $@ $<
+
+$(OBJ_DIR)/server/%.o: src/server/%.cpp $(SERVER_PCH) | $(OBJ_DIR)/server
+	$(CXX) $(CXXFLAGS) $(DEPFLAGS) -I src -I libtproc $(SPDLOG_FLAGS) -I $(OBJ_DIR)/server -include pch.h -c -o $@ $<
 
 $(OBJ_DIR)/server/%.o: src/server/%.S | $(OBJ_DIR)/server
 	$(CXX) $(DEPFLAGS) -c -o $@ $<
