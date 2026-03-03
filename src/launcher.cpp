@@ -195,7 +195,7 @@ int main(int argc, char *argv[]) {
 	for (int signum = 1; signum < NSIG; signum++) {
 		auto ptr = std::signal(signum, sighandler);
 		if (ptr == SIG_ERR) {
-			std::cerr << "Warning: failed to set signal handler for signal " << signum << ": " << strerror(errno) << std::endl;
+			// Ignore
 		}
 	}
 
@@ -219,7 +219,6 @@ int main(int argc, char *argv[]) {
 		}
 
 		ulab::ServerNotification& notification = *reinterpret_cast<ulab::ServerNotification*>(buf);
-		std::cout << "Received notification from server" << std::endl;
 		switch (notification.type) {
 			case ulab::ServerNotification::Kind::child_exit:
 				std::cout << "Child process with TID " << notification.child_exit.tid << " exited with status " << notification.child_exit.exit_status << std::endl;

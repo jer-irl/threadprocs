@@ -2,10 +2,11 @@
 //
 // After clone3(), the child calls this to:
 //   1. Redirect stdio file descriptors (dup3, raw syscalls)
-//   2. Change working directory (chdir, raw syscall)
-//   3. Close all inherited FDs > 2 (close_range)
-//   4. Switch SP to the synthetic stack (argc/argv/envp/auxv)
-//   5. Jump to ld-linux.so's _start
+//   2. Close all inherited FDs > 2 (close_range)
+//   3. Change working directory (chdir, raw syscall)
+//   4. Set /proc/self/comm to basename(argv[0]) (prctl PR_SET_NAME)
+//   5. Switch SP to the synthetic stack (argc/argv/envp/auxv)
+//   6. Jump to ld-linux.so's _start
 //
 // No libc calls are made — the child's TLS is not yet initialized.
 
@@ -13,8 +14,11 @@
 .equ SYS_dup3,         24
 .equ SYS_chdir,        49
 .equ SYS_close,        57
+.equ SYS_prctl,        167
 .equ SYS_clone3,       435
 .equ SYS_close_range,  436
+
+.equ PR_SET_NAME,      15
 
 .text
 .global child_clone3_and_exec
@@ -111,6 +115,29 @@ child_clone3_and_exec:
 	mov	x0, x24
 	mov	x8, #SYS_chdir
 	svc	#0
+
+	// --- Set /proc/self/comm to basename(argv[0]) ---
+	// synthetic_sp is in x19; [x19 + 8] is the argv[0] pointer.
+	// Scan forward tracking the character after the last '/'.
+	ldr	x0, [x19, #8]		// x0 = argv[0] string
+	mov	x25, x0		// x25 = basename candidate (starts at argv[0])
+.Lfind_basename:
+	ldrb	w1, [x0]
+	cbz	w1, .Lbasename_done
+	cmp	w1, #47			// '/'
+	bne	.Lnot_slash
+	add	x25, x0, #1		// update to char after '/'
+.Lnot_slash:
+	add	x0, x0, #1
+	b	.Lfind_basename
+.Lbasename_done:
+	mov	x0, #PR_SET_NAME
+	mov	x1, x25
+	mov	x2, #0
+	mov	x3, #0
+	mov	x4, #0
+	mov	x8, #SYS_prctl
+	svc	#0			// ignore return value; best-effort
 
 	// --- Switch to synthetic stack and launch ---
 	mov	sp, x19		// synthetic_sp (points to argc)

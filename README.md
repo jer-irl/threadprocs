@@ -1,7 +1,7 @@
 # threadprocs
 
 This repository contains experimental code for thread-like processes, or __multiple programs running in a shared address space__.
-This blends the Posix process model with the pthread programming model.
+This blends the Posix process model with the Posix multi-threading programming model.
 
 All Markdown files were written by hand.
 Claude assisted with some code for this proof-of-concept, particularly around the ELF loading and the aarch64 trampoline.
