@@ -7,8 +7,12 @@
 
 #include <cstring>
 #include <csignal>
+
+#include <atomic>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
+
 
 namespace ulab {
 
@@ -42,7 +46,8 @@ void sendfd(int sockfd, int fd_to_send, ClientRequest::Kind request_type) {
 	}
 }
 
-int sockfd = -1;
+std::atomic_int sockfd = -1;
+std::atomic<pid_t> child_pid = -1;
 
 } // namespace ulab
 
@@ -99,7 +104,32 @@ int main(int argc, char *argv[]) {
 
 	request.type = ulab::ClientRequest::Kind::args;
 	size_t offset = 0;
-	for (int i = 2; i < argc; i++) {
+	// Command needs special handling to do PATH lookup
+	{
+		std::string cmd = argv[2];
+		if (!cmd.contains('/')) {
+			FILE* f = ::popen((std::string("which ") + cmd).c_str(), "r");
+			if (!f) {
+				std::cerr << "Error executing `which` command to resolve command path: " << strerror(errno) << std::endl;
+				return 1;
+			}
+			std::array<char, 4096> which_output{};
+			if (!fgets(which_output.data(), which_output.size(), f)) {
+				std::cerr << "Error reading output of `which` command: " << strerror(errno) << std::endl;
+				return 1;
+			}
+			int which_status = pclose(f);
+			if (which_status != 0) {
+				std::cerr << "Error: `which` command failed with status " << which_status << std::endl;
+				return 1;
+			}
+			cmd = std::string(which_output.data());
+			cmd.erase(cmd.find_last_not_of(" \n\r\t") + 1);
+		}
+		std::strncpy(&buf[offsetof(ulab::ClientRequest, payload[0].args.argz[0]) + offset], cmd.c_str(), cmd.size() + 1);
+		offset += cmd.size() + 1;
+	}
+	for (int i = 3; i < argc; i++) {
 		size_t arg_len = std::strlen(argv[i]) + 1;
 		if (offset + arg_len > sizeof(buf) - sizeof(request) - sizeof(request.payload[0].args.argc)) {
 			std::cerr << "Error: total length of arguments exceeds buffer size" << std::endl;
@@ -141,6 +171,12 @@ int main(int argc, char *argv[]) {
 
 	// Install signal handlers, TODO race condition.
 	const auto sighandler = +[](int signum) {
+		if (ulab::child_pid != -1) {
+			std::cout << "Forwarding signal " << signum << " to child process with PID " << ulab::child_pid << " with kill" <<std::endl;
+			kill(ulab::child_pid, signum);
+			return;
+		}
+
 		char buf[4096];
 		// TODO rigorous about sizes, buffers-
 		ulab::ClientRequest &request = *reinterpret_cast<ulab::ClientRequest*>(buf);
@@ -163,30 +199,36 @@ int main(int argc, char *argv[]) {
 		}
 	}
 
-	msghdr msg{};
-	msg.msg_iovlen = 1;
-	iovec iov;
-	iov.iov_base = buf;
-	iov.iov_len = sizeof(buf);
-	msg.msg_iov = &iov;	
-	msg.msg_control = nullptr;
-	msg.msg_controllen = 0;
-	rc = recvmsg(ulab::sockfd, &msg, 0);
-	if (rc < 0) {
-		std::cerr << "Error receiving notification: " << strerror(errno) << std::endl;
-		return 1;
-	}
-	if (rc == 0) {
-		std::cerr << "Server closed connection before sending notification" << std::endl;
-		return 1;
-	}
+	while (true) {
+		msghdr msg{};
+		msg.msg_iovlen = 1;
+		iovec iov;
+		iov.iov_base = buf;
+		iov.iov_len = sizeof(buf);
+		msg.msg_iov = &iov;	
+		msg.msg_control = nullptr;
+		msg.msg_controllen = 0;
+		rc = recvmsg(ulab::sockfd, &msg, 0);
+		if (rc < 0) {
+			std::cerr << "Error receiving notification: " << strerror(errno) << std::endl;
+			return 1;
+		}
+		if (rc == 0) {
+			std::cerr << "Server closed connection before sending notification" << std::endl;
+			return 1;
+		}
 
-	ulab::ServerNotification& notification = *reinterpret_cast<ulab::ServerNotification*>(buf);
-	std::cout << "Received notification from server" << std::endl;
-	switch (notification.type) {
-		case ulab::ServerNotification::Kind::child_exit:
-			std::cout << "Child process with TID " << notification.child_exit.tid << " exited with status " << notification.child_exit.exit_status << std::endl;
-			break;
+		ulab::ServerNotification& notification = *reinterpret_cast<ulab::ServerNotification*>(buf);
+		std::cout << "Received notification from server" << std::endl;
+		switch (notification.type) {
+			case ulab::ServerNotification::Kind::child_exit:
+				std::cout << "Child process with TID " << notification.child_exit.tid << " exited with status " << notification.child_exit.exit_status << std::endl;
+				return notification.child_exit.exit_status;
+			case ulab::ServerNotification::Kind::child_pid:
+				std::cout << "Received child PID notification: child PID " << notification.child_pid << std::endl;
+				ulab::child_pid = notification.child_pid;
+				break;
+		}
 	}
 
 	return 0;

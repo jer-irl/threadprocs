@@ -255,6 +255,20 @@ void Server::spawn_client(LauncherInfo& client) {
 	client.status = LauncherInfo::Status::executing;
 	spdlog::info("Spawned client process with TID {}", child_tid);
 	request_waitid(client);
+
+	// Notify launcher of new PID
+	{
+		ServerNotification notification{
+			.type = ServerNotification::Kind::child_pid,
+			.child_pid = static_cast<pid_t>(child_tid),
+		};
+		int rc = send(client.conn_fd, &notification, sizeof(notification), 0);
+		if (rc == -1) {
+			spdlog::error("Error sending child PID notification: {}", strerror(errno));
+		} else {
+			spdlog::info("Sent child PID notification to launcher");
+		}
+	}
 }
 
 int Server::request_accept() {
@@ -439,7 +453,7 @@ int Server::on_waitid_cmpl(RingRequestInfo& req_info, int rc) {
 
 	client.status = LauncherInfo::Status::finished;
 
-	ServerNotification notification{ServerNotification::Kind::child_exit, {client.exec_info->tid_in_parent, req_info.info.waitid.siginfo.si_status}};
+	ServerNotification notification{.type = ServerNotification::Kind::child_exit, .child_exit = {client.exec_info->tid_in_parent, req_info.info.waitid.siginfo.si_status}};
 	int sent = send(client.conn_fd, &notification, sizeof(notification), 0); // notify client that process has finished
 	if (sent == -1) {
 		spdlog::error("Error sending notification to client: {}", strerror(errno));

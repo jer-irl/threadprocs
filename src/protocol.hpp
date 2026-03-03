@@ -73,10 +73,12 @@ struct ClientRequest {
 
 struct ServerNotification {
 	enum class Kind {
+		child_pid,
 		child_exit,
 	};
 	Kind type;
 	union {
+		pid_t child_pid;
 		struct {
 			pid_t tid;
 			int exit_status;
