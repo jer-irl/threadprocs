@@ -1,6 +1,9 @@
 .vscode/
 /buildout/
 
+Cargo.lock
+target/
+
 # Prerequisites
 *.d
 

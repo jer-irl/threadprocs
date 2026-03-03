@@ -9,7 +9,6 @@
 #include <spdlog/spdlog.h>
 
 #include <filesystem>
-#include <iostream>
 #include <memory>
 #include <optional>
 #include <vector>

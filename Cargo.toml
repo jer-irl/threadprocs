@@ -1,0 +1,3 @@
+[workspace]
+members = ["tproc-rs"]
+resolver = "3"
