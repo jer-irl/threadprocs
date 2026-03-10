@@ -10,7 +10,9 @@
 		"ghcr.io/devcontainers-extra/features/apt-packages:1": {
 			"packages": "build-essential,liburing-dev"
 		}
-	}
+	},
+
+	"securityOpt": [ "seccomp=unconfined" ]
 
 	// Use 'forwardPorts' to make a list of ports inside the container available locally.
 	// "forwardPorts": [],
