@@ -26,23 +26,22 @@ Applications can build tooling using this space to implement service discovery a
 
 ## Status
 
-- [x] _Rough_ proof of concept examples in `test/`, aarch64+x86_64 Linux (Developed in VM on M1 Macbook Air)
-- [ ] Architecture agnostic
+- [x] _Rough_ proof of concept examples in `test/`, aarch64+x86_64 Linux
 - [ ] Production quality
 - [ ] Secure
 - [ ] Documentation
 - [x] Tooling for peer/service discovery (basic)
-- [ ] Safe Rust example
 
 ## Getting started
 
 Use Linux on aarch64 or x86_64; other architectures are not supported.
-This was developed in a VM running Debian on a Macbook Air M1.
+This was developed in a VM running Debian on a Macbook Air M1, and also tested in a Debian x86_64 Github Codespace using the `.devcontainer` configuration.
 
 Dependencies:
 
 ```sh
 apt install build-essential liburing-dev
+# May need to install gcc 14+
 git submodule update --init
 ```
 
@@ -83,6 +82,9 @@ I've also collected some fun lessons learned in [conclusions](./docs/04-conclusi
 	- See the manpage section [Using MAP_FIXED safely](https://man7.org/linux/man-pages/man2/mmap.2.html)
 - Debugging and `ptrace()` are not supported.
 	- It may be possible to add partial support, but I suspect GDB makes some assumptions that would be difficult to satisfy
+- The threadproc's PID is not the same as the launching process, so operations in terms of PID may lead to issues if applications rely on details of PID-targeted operations.
+- Signals are forwarded from the launcher to the threadproc, but unhandle-able signals (SIGKILL) are not.
+	- There are likely other edge cases if a threadproc relies on details of the Posix signal behavior.
 
 There are other less pertinent limitations around the edges.
 For example, threadprocs have `/proc/[pid]/comm` values which reflect their launched binary, but `cmdline` isn't settable.
@@ -97,3 +99,10 @@ Having independent libc, libstdc++, and rust libstd instances for each tproc gre
 
 One could architect their application around this limitation, and ensure memory is always handed back to the tproc which allocated it so it can be de-allocated correctly.
 You could imagine building application frameworks to support this, but I consider them outside the scope of this project.
+
+## Docs
+
+- [Overview](./docs/01-overview.md)
+- [Design and Implementation](./docs/02-implementation.md)
+- [Comparison to existing approaches](./docs/03-comparisons.md)
+- [Conclusions and lessons learned](./docs/04-conclusions.md)

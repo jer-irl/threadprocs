@@ -3,7 +3,7 @@
 ## Context
 
 Working in latency-sensitive trading, IO bandwidth-bound AI training, and messaging rate-bound HPC networking, I have a brainworm for IPC mechanisms.
-I recently contributed to Cornelis Networks's Super NIC device driver, and had a lot of fun applying userspace IPC approaches to a kernel-space RDMA driver.
+I recently contributed to Cornelis Networks's SuperNIC device driver, and had a lot of fun applying userspace IPC approaches to a kernel-space RDMA driver.
 
 Conventional wisdom for single-host IPC within a single processor / NUMA / memory domain node is to use shared memory IPC.
 There are a few prevailing approaches, but for most workloads with multiple threads, they typically rely on lock-free queues.
@@ -29,8 +29,8 @@ There are other limitations and drawbacks around a shared memory programming mod
 
 ## Goal
 
-POSIX has served as a remarkably resilient set of standard interfaces, with the process model and pthreads API widely adopted in many operating systems.
+POSIX has served as a remarkably resilient set of standard interfaces, with the process model and pthreads API widely adopted in many operating systems and in a preponderance of software applications.
 These abstractions have received criticism, but modern C and C++ continue to "lean in" to the programming model.
 
-In performance-sensitive applications of significant complexity, I posit that the basic pthreads model is not globally optimal, and that there are improvements to be had.
-With this project, I want to explore a possible different approach to developing and deploying these applications.
+In performance-sensitive applications of significant complexity, I posit that the basic pthreads model is not globally optimal, and that there are improvements to be explored.
+With this project, I wanted to explore a possible different approach to developing and deploying these applications.
