@@ -19,9 +19,19 @@ SERVER   := $(BUILD_DIR)/server
 LAUNCHER := $(BUILD_DIR)/launcher
 LIBTPROC := $(BUILD_DIR)/libtproc.a
 
+# --- Architecture detection -------------------------------------------
+UNAME_M := $(shell uname -m)
+ifeq ($(UNAME_M),x86_64)
+  ARCH := x86_64
+else ifeq ($(UNAME_M),aarch64)
+  ARCH := aarch64
+else
+  $(error Unsupported architecture: $(UNAME_M))
+endif
+
 # --- Server -----------------------------------------------------------
 SERVER_SRCS := src/server/main.cpp src/server/elf_loader.cpp src/server/server.cpp
-SERVER_ASM  := src/server/trampoline_aarch64.S
+SERVER_ASM  := src/server/trampoline_$(ARCH).S
 SERVER_OBJS := $(SERVER_SRCS:src/server/%.cpp=$(OBJ_DIR)/server/%.o) \
                $(SERVER_ASM:src/server/%.S=$(OBJ_DIR)/server/%.o)
 

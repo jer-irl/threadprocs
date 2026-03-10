@@ -26,7 +26,7 @@ Applications can build tooling using this space to implement service discovery a
 
 ## Status
 
-- [x] _Rough_ proof of concept examples in `test/`, aarch64+Linux only! (Developed in VM on M1 Macbook Air)
+- [x] _Rough_ proof of concept examples in `test/`, aarch64+x86_64 Linux (Developed in VM on M1 Macbook Air)
 - [ ] Architecture agnostic
 - [ ] Production quality
 - [ ] Secure
@@ -36,7 +36,7 @@ Applications can build tooling using this space to implement service discovery a
 
 ## Getting started
 
-Use Linux on aarch64, other architectures not supported.
+Use Linux on aarch64 or x86_64; other architectures are not supported.
 This was developed in a VM running Debian on a Macbook Air M1.
 
 Dependencies:

@@ -36,6 +36,18 @@ auto LoadedElf::load_from_path(std::string_view path) -> std::expected<LoadedElf
 		return std::unexpected{-ENOEXEC};
 	}
 
+#if defined(__x86_64__)
+	constexpr auto expected_machine = EM_X86_64;
+#elif defined(__aarch64__)
+	constexpr auto expected_machine = EM_AARCH64;
+#else
+	#error "Unsupported architecture"
+#endif
+	if (ehdr.e_machine != expected_machine) {
+		spdlog::error("ELF machine type mismatch: expected {}, got {}", expected_machine, ehdr.e_machine);
+		return std::unexpected{-ENOEXEC};
+	}
+
 	// Read program headers
 	size_t phsize = (size_t)ehdr.e_phentsize * ehdr.e_phnum;
 	auto phbuf = std::make_unique<char[]>(phsize);

@@ -103,7 +103,7 @@ Once the server is ready to launch a process, the following sequence occurs
 		- `CLONE_PARENT` so the spawned thread's parent is the server, and the child is not a peer process with the server
 		- `CLONE_SIGHAND` so handlers are not shared
 		- `CLONE_THREAD` to avoid making the child look like only a thread
-7. The `extern "C"` trampoline function is called.  This is currently only implemented in ARM assembly.
+7. The `extern "C"` trampoline function is called.  This is implemented in architecture-specific assembly (aarch64 and x86_64).
 8. The `clone3()` system call is invoked, and the return value is checked, as with `fork()`.  If non-zero, the trampoline returns up to the server poll loop.
 9. If in the child "thread" of execution, the `dup3()` system call is used to move the launcher `stdin/out/err` file descriptors into the conventional `0/1/2` values.  Once these are installed, the `close_range()` syscall is used to close all other open file descriptors, and avoid leaking any between launched processes.
 10. The trampoline bounces into the entry point, which will typically be in `ld-linux.so`.  This program will do a lot of things, but resources other than virtual memory should be isolated, and as long as the launched program isn't doing `MAP_FIXED` `mmap()` calls unsafely, and isn't trying to scan its address space and touch things it shouldn't, this seems to work.
