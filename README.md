@@ -28,7 +28,7 @@ Applications can build tooling using this space to implement service discovery a
 
 - [x] _Rough_ proof of concept examples in `test/`, aarch64+x86_64 Linux
 - [ ] Production quality
-- [ ] Secure
+- [x] Secure(ish)
 - [ ] Documentation
 - [x] Tooling for peer/service discovery (basic)
 

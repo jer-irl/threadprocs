@@ -288,7 +288,21 @@ int Server::on_accept_cmpl(RingRequestInfo const& info, int rc) {
 	}
 	spdlog::info("Accepted connection");
 
-	// TODO security: check peer credentials, permissions on socket, etc.
+	// Reject connections from other UIDs
+	struct ucred cred;
+	socklen_t cred_len = sizeof(cred);
+	if (getsockopt(rc, SOL_SOCKET, SO_PEERCRED, &cred, &cred_len) == -1) {
+		spdlog::warn("Failed to get peer credentials: {}", strerror(errno));
+		close(rc);
+		request_accept();
+		return 0;
+	}
+	if (cred.uid != getuid()) {
+		spdlog::warn("Rejected connection from UID {} (server UID {})", cred.uid, getuid());
+		close(rc);
+		request_accept();
+		return 0;
+	}
 
 	std::unique_ptr<LauncherInfo>& client = clients.emplace_back(std::make_unique<LauncherInfo>());
 	client->status = LauncherInfo::Status::connected;

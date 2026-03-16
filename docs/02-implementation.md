@@ -15,8 +15,8 @@ $ ./launcher /path/to/my.sock /path/to/my_program my_program_arg1 my_program_arg
 ```
 
 Any number of processes can attach to a running server.
-This is inherently very insecure, and I also haven't implemented authorization in the socket connection, though SCM_CREDENTIALS would be a decent starting place.
-If you have a running server, Mallory could currently trivially run untrusted code as long as she can access the socket, and could cause any number of problems with existing running code by attaching and interfering.
+This is inherently very insecure, and the server only validates that the client is running with the same UID.
+If you have a running server and a rogue client is able to connect (and pass the UID check), it could trivially run untrusted code and cause any number of problems with existing running code by attaching and interfering.
 
 To ease the server code implementation, the main poll loop uses io_uring (through liburing).
 
@@ -68,6 +68,8 @@ I am not sure how well this holds up when the server executes earlier than launc
 ## Launching threadprocs
 
 Once the server process knows the entire description of a new program to launch, it uses the `clone3` and `dup3` system calls in tricky ways to accomplish a hybrid process/thread.
+This ends up looking a lot like a userspace implmentation of the `exec` system call.
+
 In Linux (the OS Kernel), there is not really a concept of a "thread," only of processes and peer "process groups." which share varying resources.
 NPTL (Native Posix Threading Library) is a subcomponent of glibc which implements Posix process + thread semantics on top of the Linux system calls.
 The [manpage](https://man7.org/linux/man-pages/man7/nptl.7.html) describes some interesting workarounds for edges where Posix semantics don't map nicely onto Linux system calls.
@@ -152,7 +154,7 @@ It quickly became clear that it was best to have multiple independent instances 
 - [ ] Test signals and unclean exits
 - [ ] Resource leaks on exit
 	- Hook `mmap()`?
-- [ ] Socket credentials
+- [x] Socket credentials
 - [ ] Memory access, maybe something with `userfaultfd()`
 - [ ] Floating point execution environment
 - [ ] Interaction with setuid bit?  I'm not sure if this is only in `exec()` or if there's a way to recreate it without additional privilege.  Probably not.

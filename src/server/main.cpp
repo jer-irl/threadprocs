@@ -68,9 +68,10 @@ int main(int argc, char *argv[]) {
 		return 1;
 	}
 
-	// TODO security on socket
-
+	// Restrict socket to owner only (mode 0700)
+	mode_t old_umask = umask(0077);
 	rc = bind(sockfd, (struct sockaddr *)&addr, sizeof(addr));
+	umask(old_umask);
 	if (rc == -1) {
 		spdlog::error("Error binding socket: {}", strerror(errno));
 		return 1;
