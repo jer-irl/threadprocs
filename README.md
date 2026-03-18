@@ -8,6 +8,8 @@ Claude assisted with some code for this proof-of-concept, particularly around th
 
 DO NOT use this for anything beyond a trivial test.  Bad things will probably happen.
 
+See [tproc-actors](https://github.com/jer-irl/tproc-actors) for one possible application framework approach building on top of threadprocs.
+
 ## Elevator pitch
 
 The `server` utility "hosts" a virtual address space, and by using `launcher` to start programs, those launched programs can coexist in the hosted address space.
