@@ -17,8 +17,8 @@ Applications can share pointers in the virtual address space through some out-of
 
 The code for the demoed programs is at `example/allocstr.cpp` and `example/printstr.cpp`, and neither contains any magic (`/proc/[pid]/mem`, etc), nor awareness of the server and launcher.
 
-- `allocstr` reads input, and copies it into a new `std::string`, and prints `string.c_str()` to console.
-- `printstr` reads a pointer as hex text, and prints whatever null-terminated string it finds there.
+- `allocstr` reads input, and copies it into a new `std::string`, and prints `&newstring` to console.
+- `printstr` reads a pointer as hex text, and prints whatever `std::string` it finds there.
 
 https://github.com/user-attachments/assets/1d21dac4-91ea-4ef2-89c0-51e62b1fbc71
 
