@@ -1,23 +1,24 @@
 # threadprocs
 
 This repository contains experimental code for thread-like processes, or __multiple programs running in a shared address space__.
-This blends the Posix process model with the Posix multi-threading programming model.
+This blends the Posix process model with the Posix multi-threading programming model, and enables things like zero-copy access to pointer-based data structures.
 
 All Markdown files were written by hand.
-Claude assisted with some code for this proof-of-concept, particularly around the ELF loading and the aarch64 trampoline.
 
-DO NOT use this for anything beyond a trivial test.  Bad things will probably happen.
-
-See [tproc-actors](https://github.com/jer-irl/tproc-actors) for one possible application framework approach building on top of threadprocs.
+See [tproc-actors](https://github.com/jer-irl/tproc-actors) for one possible application framework building on top of threadprocs.
 
 ## Elevator pitch
 
-The `server` utility "hosts" a virtual address space, and by using `launcher` to start programs, those launched programs can coexist in the hosted address space.
-Applications can share pointers in the virtual address space through some out-of-band mechanism ([Demo](#demo) uses copy/paste, dummy_server/client uses sockets, libtproc provides server-global scratch space), and then _directly dereference those pointers_, as they're valid in the shared address space.
+The `server` utility "hosts" a virtual address space, and by using `launcher` to start programs, those launched programs coexist in the hosted address space.
+
+Applications can share pointers in the virtual address space through some out-of-band mechanism ([Demo](#demo) uses copy/paste, dummy_server/client uses sockets, `libtproc` provides server-global scratch space), and then _directly dereference those pointers_, as they're valid in the shared address space.
 
 ## Demo
 
 The code for the demoed programs is at `example/allocstr.cpp` and `example/printstr.cpp`, and neither contains any magic (`/proc/[pid]/mem`, etc), nor awareness of the server and launcher.
+
+- `allocstr` reads input, and copies it into a new `std::string`, and prints `string.c_str()` to console.
+- `printstr` reads a pointer as hex text, and prints whatever null-terminated string it finds there.
 
 https://github.com/user-attachments/assets/496b68fb-3965-4c44-874f-a96d370c92cb
 
@@ -37,7 +38,7 @@ Applications can build tooling using this space to implement service discovery a
 ## Getting started
 
 Use Linux on aarch64 or x86_64; other architectures are not supported.
-This was developed in a VM running Debian on a Macbook Air M1, and also tested in a Debian x86_64 Github Codespace using the `.devcontainer` configuration.
+This was developed in a VM running Debian on a Macbook Air M1, and also tested in a Debian x86_64 Github Codespace using the `.devcontainer/` configuration.
 
 Dependencies:
 
@@ -100,7 +101,7 @@ ABI aside, the major hiccup is that even if threadproc 1 releases a pointer, and
 Having independent libc, libstdc++, and rust libstd instances for each tproc greatly reduces the technical dependencies on launched programs, but it also means that a threadproc cannot deallocate memory allocated by another threadproc.
 
 One could architect their application around this limitation, and ensure memory is always handed back to the tproc which allocated it so it can be de-allocated correctly.
-You could imagine building application frameworks to support this, but I consider them outside the scope of this project.
+I've taken a stab at an application framework that does this in [tproc-actors](https://github.com/jer-irl/tproc-actors).
 
 ## Docs
 

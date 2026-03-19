@@ -3,10 +3,11 @@
 int main() {
 	while (true) {
 		void* ptr = nullptr;
-		std::cout << "Enter a hex pointer to a null-terminated string in virtual address space: " << std::endl;
+		std::cout << "Enter a hex pointer to a std::string in virtual address space: " << std::endl;
 		if (!(std::cin >> ptr >> std::dec)) {
 			break;
 		}
-		std::cout << "The string content at address " << reinterpret_cast<void*>(ptr) << " is: " << reinterpret_cast<const char*>(ptr) << std::endl;
+		std::string* s = reinterpret_cast<std::string*>(ptr);
+		std::cout << "The std::string at address " << reinterpret_cast<void*>(ptr) << " is: " << *s << std::endl;
 	}
 }

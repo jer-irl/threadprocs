@@ -13,8 +13,8 @@ int main() {
 		if (!std::getline(std::cin, *input)) {
 			break;
 		}
-		std::cout << "The string content is present at address: " << static_cast<const void*>(input->c_str()) << std::endl;
-		std::cout << "The string content is: " << input->c_str() << std::endl;
+		std::cout << "New std::string allocated at address: " << static_cast<const void*>(input.get()) << std::endl;
+		std::cout << "The string content is: " << *input << std::endl;
 		strings.emplace_back(std::move(input));
 	}
 	// Block until killed so shared-memory strings remain valid for other threadprocs.
