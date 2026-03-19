@@ -20,7 +20,7 @@ The code for the demoed programs is at `example/allocstr.cpp` and `example/print
 - `allocstr` reads input, and copies it into a new `std::string`, and prints `string.c_str()` to console.
 - `printstr` reads a pointer as hex text, and prints whatever null-terminated string it finds there.
 
-https://github.com/user-attachments/assets/496b68fb-3965-4c44-874f-a96d370c92cb
+https://github.com/user-attachments/assets/1d21dac4-91ea-4ef2-89c0-51e62b1fbc71
 
 ## libtproc
 
