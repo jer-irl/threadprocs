@@ -112,6 +112,10 @@ Having independent libc, libstdc++, and rust libstd instances for each tproc gre
 One could architect their application around this limitation, and ensure memory is always handed back to the tproc which allocated it so it can be de-allocated correctly.
 I've sketched out an application framework that automatically passes objects back to their allocating threadproc in a custom `unique_ptr` analogue, see [tproc-actors](https://github.com/jer-irl/tproc-actors).
 
+This is an interesting direction, and raises questions that could be explored further, but I don't think this is a practical model for any serious software.
+Pthreads are a somewhat stagnant abstraction, but they have the benefit of decades of tooling and language development shaped around them.
+I haven't extracted the brainworm yet, though, and perhaps in the future I'll explore ways to augment shared memory regions with custom allocators, fixed mappings, etc.
+
 ## Docs
 
 - [Overview](./docs/01-overview.md)
