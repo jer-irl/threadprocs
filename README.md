@@ -1,11 +1,23 @@
 # threadprocs
 
 This repository contains experimental code for thread-like processes, or __multiple programs running in a shared address space__.
+Each threadproc behaves like a process with its own executable, globals, libc instance, etc, but pointers are valid across threadprocs.
 This blends the Posix process model with the Posix multi-threading programming model, and enables things like zero-copy access to pointer-based data structures.
 
 All Markdown files were written by hand.
 
 See [tproc-actors](https://github.com/jer-irl/tproc-actors) for one possible application framework building on top of threadprocs.
+
+## Demo
+
+The code for the demoed programs is at `example/sharedstr/allocstr.cpp` and `example/sharedstr/printstr.cpp`, and neither contains any magic (`/proc/[pid]/mem`, etc), nor awareness of the server and launcher.
+
+- `allocstr` reads input, and copies it into a new `std::string`, and prints `&newstring` to console.
+- `printstr` reads a pointer as hex text, and prints whatever `std::string` it finds there.
+
+https://github.com/user-attachments/assets/1d21dac4-91ea-4ef2-89c0-51e62b1fbc71
+
+![server memory diagram](./servermemory.drawio.svg)
 
 ## Elevator pitch
 
@@ -13,23 +25,19 @@ The `server` utility "hosts" a virtual address space, and by using `launcher` to
 
 Applications can share pointers in the virtual address space through some out-of-band mechanism ([Demo](#demo) uses copy/paste, dummy_server/client uses sockets, `libtproc` provides server-global scratch space), and then _directly dereference those pointers_, as they're valid in the shared address space.
 
-## Demo
-
-The code for the demoed programs is at `example/allocstr.cpp` and `example/printstr.cpp`, and neither contains any magic (`/proc/[pid]/mem`, etc), nor awareness of the server and launcher.
-
-- `allocstr` reads input, and copies it into a new `std::string`, and prints `&newstring` to console.
-- `printstr` reads a pointer as hex text, and prints whatever `std::string` it finds there.
-
-https://github.com/user-attachments/assets/1d21dac4-91ea-4ef2-89c0-51e62b1fbc71
-
 ## libtproc
 
-`libtproc` provides very rudimentary detection of execution as a threadproc, and allows hosted threadprocs to access a "server-global" scratch space.
+`libtproc` provides basic detection of execution as a threadproc, and allows hosted threadprocs to access a "server-global" scratch space.
 Applications can build tooling using this space to implement service discovery and bootstrap shared memory-backed IPC.
+
+This is implemented by adding another entry to the threadproc auxv.
+
+[tproc-actors](https://github.com/jer-irl/tproc-actors) uses this space to advertise per-threadproc actor registries.
 
 ## Status
 
-- [x] _Rough_ proof of concept examples in `test/`, aarch64+x86_64 Linux
+- [x] Proof of concept in `examples/` and `test/`
+- [x] aarch64+x86_64 Linux
 - [ ] Production quality
 - [x] Secure(ish)
 - [ ] Documentation
@@ -71,10 +79,11 @@ Or run your own programs in a shared address space:
 ```
 
 Read the [overview](./docs/01-overview.md) or [implementation](./docs/02-implementation.md) for information on the project, or read [comparisons to existing work](./docs/03-comparisons.md).
-I've also collected some fun lessons learned in [conclusions](./docs/04-conclusions.md).
+I've also collected some lessons learned in [conclusions](./docs/04-conclusions.md).
 
 ## Technical limitations
 
+- Each threadproc has its own runtime library instance (libc), and care must be taken not to call `malloc()` in one threadproc but try to `free()` that memory in another threadproc.
 - Target applications must be compiled as "position independent code," as do any dynamically loaded objects.
 	- This is standard for dynamically linked libraries, and default for executable binaries compiled in many modern distros in order to support flavors of ASLR.
 	- Properly architected libraries can mitigate most drawbacks of this, and executable files also carry minimal overhead.
@@ -101,7 +110,7 @@ ABI aside, the major hiccup is that even if threadproc 1 releases a pointer, and
 Having independent libc, libstdc++, and rust libstd instances for each tproc greatly reduces the technical dependencies on launched programs, but it also means that a threadproc cannot deallocate memory allocated by another threadproc.
 
 One could architect their application around this limitation, and ensure memory is always handed back to the tproc which allocated it so it can be de-allocated correctly.
-I've taken a stab at an application framework that does this in [tproc-actors](https://github.com/jer-irl/tproc-actors).
+I've sketched out an application framework that automatically passes objects back to their allocating threadproc in a custom `unique_ptr` analogue, see [tproc-actors](https://github.com/jer-irl/tproc-actors).
 
 ## Docs
 
