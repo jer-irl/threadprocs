@@ -142,12 +142,17 @@ Server::Server(int sockfd) : sockfd{sockfd}, ring{} {
 	}
 }
 
-void Server::spawn_client(LauncherInfo& client) {
+bool Server::spawn_client(LauncherInfo& client) {
 	// --- Step 1: Load the target ELF binary ---
-	auto target_result = LoadedElf::load_from_path(client.args[0]);
+	// Resolve relative paths against the launcher's CWD, not the server's.
+	std::filesystem::path exe_path{client.args[0]};
+	if (exe_path.is_relative() && !client.cwd.empty()) {
+		exe_path = client.cwd / exe_path;
+	}
+	auto target_result = LoadedElf::load_from_path(exe_path.string());
 	if (!target_result) {
-		spdlog::error("Error loading target ELF '{}': {}", client.args[0], strerror(-target_result.error()));
-		return;
+		spdlog::error("Error loading target ELF '{}': {}", exe_path.string(), strerror(-target_result.error()));
+		return false;
 	}
 	auto& tr = target_result.value();
 	spdlog::debug("Loaded target: base={} entry={} phdr={} interp='{}'",
@@ -160,7 +165,7 @@ void Server::spawn_client(LauncherInfo& client) {
 		auto exp_interp = LoadedElf::load_from_path(tr.interp);
 		if (!exp_interp) {
 			spdlog::error("Error loading interpreter '{}': {}", tr.interp, strerror(-exp_interp.error()));
-			return;
+			return false;
 		}
 		interp = std::move(exp_interp.value());
 		spdlog::debug("Loaded interpreter: base={} entry={}", interp->base, interp->entry);
@@ -175,7 +180,7 @@ void Server::spawn_client(LauncherInfo& client) {
 							pstack_size};
 	if (process_stack->data() == MAP_FAILED) {
 		spdlog::error("Error allocating process stack: {}", strerror(errno));
-		return;
+		return false;
 	}
 
 	auto* stack_top = process_stack->data() + process_stack->size();
@@ -201,7 +206,7 @@ void Server::spawn_client(LauncherInfo& client) {
 							c3stack_size};
 	if (clone3_stack->data() == MAP_FAILED) {
 		spdlog::error("Error allocating clone3 stack: {}", strerror(errno));
-		return;
+		return false;
 	}
 
 	auto& ei = client.exec_info.emplace(LauncherInfo::ExecInfo{
@@ -244,7 +249,7 @@ void Server::spawn_client(LauncherInfo& client) {
 	if (child_tid < 0) {
 		spdlog::error("Error in clone3: {}", strerror((int)-child_tid));
 		client.exec_info.reset();
-		return;
+		return false;
 	}
 
 	// --- Parent continues ---
@@ -269,6 +274,7 @@ void Server::spawn_client(LauncherInfo& client) {
 			spdlog::info("Sent child PID notification to launcher");
 		}
 	}
+	return true;
 }
 
 int Server::request_accept() {
@@ -433,7 +439,10 @@ int Server::on_recvmsg_cmpl(RingRequestInfo& req_info, int rc) {
 			joined += " " + client.args[i];
 		}
 		spdlog::info("Client is ready to execute program with args: {}", joined);
-		spawn_client(client);
+		if (!spawn_client(client)) {
+			ServerNotification notification{.type = ServerNotification::Kind::spawn_failed, .child_pid = 0};
+			send(client.conn_fd, &notification, sizeof(notification), 0);
+		}
 	}
 
 	request_recvmsg(client);

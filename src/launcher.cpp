@@ -227,6 +227,9 @@ int main(int argc, char *argv[]) {
 				std::cout << "Received child PID notification: child PID " << notification.child_pid << std::endl;
 				ulab::child_pid = notification.child_pid;
 				break;
+			case ulab::ServerNotification::Kind::spawn_failed:
+				std::cerr << "Server failed to spawn process" << std::endl;
+				return 1;
 		}
 	}
 

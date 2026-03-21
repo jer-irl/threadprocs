@@ -120,7 +120,7 @@ public:
 	}
 
 private:
-	void spawn_client(LauncherInfo& client);
+	bool spawn_client(LauncherInfo& client);
 
 	int request_accept();
 	int on_accept_cmpl(RingRequestInfo const& info, int rc);

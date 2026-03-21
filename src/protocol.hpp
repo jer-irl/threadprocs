@@ -75,6 +75,7 @@ struct ServerNotification {
 	enum class Kind {
 		child_pid,
 		child_exit,
+		spawn_failed,
 	};
 	Kind type;
 	union {
