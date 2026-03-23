@@ -131,7 +131,7 @@ Once the server is ready to launch a process, the following sequence occurs
 	- Trampoline stack
 	- No TLS
 	- Notable included flags:
-		- `CLONE_VM` for a single virtual address space, unlike `exec()`
+		- `CLONE_VM` for a single virtual address space, unlike `fork()` and `exec()` 
 		- `CLONE_CLEAR_SIGHAND`
 	- Notable exluded flags:
 		- `CLONE_FILES` so file descriptors are not "globally shared" between the child and server
