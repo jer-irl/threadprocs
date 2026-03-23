@@ -1,6 +1,6 @@
 # Design
 
-The utility is distributed as 2 executable programs
+The utility is distributed as 2 executable programs.
 The first is used to serve as a shared address space, and advertises itself as a Unix socket:
 
 ```sh
