@@ -1,5 +1,20 @@
 # Design
 
+## Table of Contents
+
+- [Design](#design)
+  - [Launcher illusion](#launcher-illusion)
+    - [Execution environment](#execution-environment)
+    - [stdin/out/err file descriptors](#stdinouterr-file-descriptors)
+    - [Signal forwarding and exit notification](#signal-forwarding-and-exit-notification)
+    - [Launcher app alternatives](#launcher-app-alternatives)
+  - [Launching threadprocs](#launching-threadprocs)
+    - [File descriptor cleanup](#file-descriptor-cleanup)
+    - [Process OS info](#process-os-info)
+    - [Launch sequence](#launch-sequence)
+    - [Threadproc launch alternatives](#threadproc-launch-alternatives)
+  - [Hand-waves and next steps](#hand-waves-and-next-steps)
+
 The utility is distributed as 2 executable programs.
 The first is used to serve as a shared address space, and advertises itself as a Unix socket:
 
